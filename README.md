@@ -16,58 +16,68 @@ Only the head is trained, on cached embeddings, so training a new dataset takes 
 
 ## Results
 
-Frozen backbone + MLP head (2048-1024-classes, ReLU, int8 hidden activation), default settings, no hyperparameter tuning, one sigmoid (BCE) output per class. Test accuracy is measured through the final engine.
+Frozen backbone + MLP head, default settings, no hyperparameter tuning, one sigmoid output per class. Test accuracy is the int8 head computed exactly on the backbone engine's test embeddings; `engine.py` runs the test set through the final engine and checks it matches (within 1 point; in practice equal).
 
-| Dataset | Classes | Train / val / test split (k) | Train / val / test acc (%) | Head train time (s) |
+**ResNet50 INT8** (default, D = 2048):
+
+| Dataset | Classes | Train/val/test (k) | Top-1 Accuracy (%) | Head train time (s) |
 |---|---|---|---|---|
-| CIFAR-10 | 10 | 45 / 5 / 10 | 95.64 / 90.20 / **90.02** | 13 |
-| CIFAR-100 | 100 | 45 / 5 / 10 | 85.32 / 70.60 / **70.00** | 14 |
-| MNIST | 10 | 54 / 6 / 10 | 99.84 / 98.27 / **98.50** | 20 |
-| EMNIST Balanced | 47 | 101.5 / 11.3 / 18.8 | 92.37 / 86.44 / **86.75** | 37 |
-| Tiny ImageNet | 200 | 90 / 10 / 10 | 83.51 / 72.88 / **72.48** | 21 |
-| Intel Image Classification | 6 | 12.6 / 1.4 / 3 | 95.43 / 93.44 / **92.17** | 6 |
-| EuroSAT RGB | 10 | 19.4 / 2.2 / 5.4 | 98.55 / 95.65 / **95.15** | 8 |
+| CIFAR-10 | 10 | 45.0 / 5.0 / 10.0 | 95.2 / 90.2 / **90.0** | 13 |
+| CIFAR-100 | 100 | 45.0 / 5.0 / 10.0 | 87.0 / 70.1 / **70.0** | 14 |
+| MNIST | 10 | 54.0 / 6.0 / 10.0 | 100.0 / 98.8 / **98.6** | 24 |
+| EMNIST Balanced | 47 | 101.5 / 11.3 / 18.8 | 93.2 / 87.5 / **86.9** | 38 |
+| Tiny ImageNet | 200 | 90.0 / 10.0 / 10.0 | 82.6 / 73.1 / **72.5** | 21 |
+| Intel Image Classification | 6 | 12.6 / 1.4 / 3.0 | 95.5 / 92.2 / **92.2** | 6 |
+| EuroSAT RGB | 10 | 19.4 / 2.2 / 5.4 | 98.4 / 95.3 / **95.2** | 11 |
+
+**DINOv3 ConvNeXt-Tiny INT8** (`--backbone convnext`, D = 768):
+
+| Dataset | Classes | Train/val/test (k) | Top-1 Accuracy (%) | Head train time (s) |
+|---|---|---|---|---|
+| CIFAR-10 | 10 | 45.0 / 5.0 / 10.0 | 96.8 / 95.1 / **94.6** | 10 |
+| CIFAR-100 | 100 | 45.0 / 5.0 / 10.0 | 90.0 / 81.6 / **82.2** | 9 |
+| MNIST | 10 | 54.0 / 6.0 / 10.0 | 99.8 / 98.4 / **98.5** | 25 |
+| EMNIST Balanced | 47 | 101.5 / 11.3 / 18.8 | 92.1 / 86.7 / **86.8** | 40 |
+| Tiny ImageNet | 200 | 90.0 / 10.0 / 10.0 | 87.6 / 80.7 / **80.0** | 16 |
+| Intel Image Classification | 6 | 12.6 / 1.4 / 3.0 | 96.8 / 95.2 / **95.0** | 4 |
+| EuroSAT RGB | 10 | 19.4 / 2.2 / 5.4 | 98.9 / 96.2 / **95.6** | 8 |
 
 Speed on an RTX 3050 Ti Laptop (4 GB), TensorRT 11.4, CUDA 13:
 
-| | |
-|---|---|
-| Engine latency, batch 1 / batch 64 | about 2-3 ms / 17.5 ms (about 3,600 img/s at batch 64) |
-| Embeddings for 60k CIFAR images | about 20 s (once, then cached) |
-| Head training | 6-38 s (table above) |
-| Engine build | about 100 s per run |
-| GPU memory for the engine | about 350 MB |
+| | ResNet50 | ConvNeXt-Tiny |
+|---|---|---|
+| Engine latency, batch 1 / batch 64 | about 2 ms / 17 ms (about 3,700 img/s at batch 64) | about 3.5 ms / 43 ms (about 1,500 img/s at batch 64) |
+| Embeddings for 60k CIFAR images | about 20 s (once, then cached) | about 45 s (once, then cached) |
+| Head training | 6-37 s (tables above) | 6-34 s (tables above) |
+| Engine build (`engine.py`, only for a run worth keeping) | about 2 min | about 1 min |
+| GPU memory for the engine | about 250 MB | about 390 MB |
 
 ## Usage
 
-Needs an NVIDIA GPU, PyTorch with CUDA, TensorRT 11 (Python package plus the `trtexec` binary on `PATH`), `cuda-python`, `onnx`, `onnxruntime`, `numpy` and `pillow`.
-The INT8 ResNet50 (`resnet50-v1-12-int8.onnx`) and the datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `IntClassifier/data/`. Run from `IntClassifier/`:
+The backbone is a ready INT8 Q/DQ ONNX downloaded from the Hugging Face Hub on first use (`huggingface_hub`; `HF_TOKEN` from the environment or the project `.env`): `--backbone resnet50` (default, from the ONNX Model Zoo `resnet50-v1-12-int8`) or `--backbone convnext` (DINOv3 ConvNeXt-Tiny), both in the [tuannw/ModelEdge](https://huggingface.co/tuannw/ModelEdge) repo with its model card and license; the PeopleNet INT8 detector is there too. `export.py` rebuilds both from the upstream models and pushes them. The datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `IntClassifier/data/`. Run from `IntClassifier/`:
 
 ```bash
 cd IntClassifier
 python train.py cifar10
+python train.py cifar10 --backbone convnext   # writes weight/cifar10-convnext/
 python train.py tiny-imagenet          # also: cifar100, mnist, emnist (downloaded on first use)
 python train.py intel                   # your own folder: data/intel/{train,test}/<class>/*.jpg (or any path)
+python engine.py weight/cifar10         # model.onnx -> model.engine for a run you keep, checked against the run and timed
 python predict.py weight/cifar10/model.engine image.jpg
 ```
 
-Options: `--epochs N` (default: train until early stop), `--stages` (default `1e-3:10,5e-4:8,2e-4:6,1e-4:4`: lr:patience pairs, lower lr and smaller patience each time the val loss stalls), `--eps` (Adam eps, default 1e-8), `--bs` (head batch size, default 1024), `--hidden H` (MLP head 2048-H-classes with ReLU, default 1024, exported with an int8 hidden activation; 0 = one linear layer), `--seed` (default: random, saved in `metrics.json`), `--per-class N`, `--test-per-class N`.
+Options: `--epochs N` (default: train until early stop), `--stages` (default `1e-3:10,5e-4:10,1e-4:10`: lr:patience pairs, a lower lr each time the val loss stalls for `patience` epochs), `--eps` (Adam eps, default 1e-8), `--bs` (head batch size, default 1024), `--backbone resnet50|convnext`, `--seed` (default: random, saved in `metrics.json`), `--per-class N`, `--test-per-class N`.
 
-Each run writes `weight/<dataset>/` (replacing the previous run of that dataset): `model.onnx`, `model.engine`, `metrics.json` (dataset, train/val/test accuracy and loss, timings, GPU and RAM use) and `train.log`.
+Each run writes `weight/<dataset>/` (`weight/<dataset>-convnext/` for ConvNeXt; replacing the previous run): `model.onnx` (backbone + int8 head in one graph), `metrics.json` (dataset, train/val/test accuracy and loss, timings, GPU and RAM use) and `train.log`. A run takes seconds once the embeddings are cached, so trying seeds or settings is cheap; `engine.py` then adds `model.engine` and an `engine` entry in `metrics.json` (engine accuracy, latency, GPU memory).
 `predict.py` reads the class names from the `.onnx` next to the `.engine` and turns the top logit into a confidence with a sigmoid.
 
-Code in `IntClassifier/`: `train.py` (head training and the run), `model.py` (QLinear to QDQ conversion, engine runner, head graph), `dataset.py` (loaders), `predict.py`.
+Code in `IntClassifier/`: `train.py` (head training and the run, up to the ONNX), `engine.py` (TensorRT engine of a run), `model.py` (backbone download, QLinear to QDQ conversion, engine runner, head graph), `export.py` (builds and pushes the backbone ONNX), `dataset.py` (loaders), `predict.py`.
 Your own data: put it in `<root>/train/<class>/` and `<root>/test/<class>/` (same class folders in both) and pass `<root>` (a bare name is looked up in `data/`). To add a downloadable dataset, write a loader in `dataset.py` and register it in `DATASETS`. The Intel and EuroSAT numbers above come from the Kaggle downloads arranged this way (Intel: `seg_train` and `seg_test` renamed to `train` and `test`; EuroSAT: every 5th image of each class moved to `test`).
 
-## How it works
-
-- **QLinear to QDQ.** The Model Zoo model uses uint8 activations with non-zero zero-points, which TensorRT rejects. `model.py` rewrites it as Quantize/Dequantize pairs with int8 symmetric activations. Weights and biases keep their exact values. Post-ReLU tensors lose about one bit, and the embeddings end up at cosine about 0.9 against the original model, which did not hurt accuracy here.
-- **Head.** MLP 2048-1024-classes: one sigmoid per class trained with binary cross-entropy against the one-hot label, Adam on the int8 embeddings with staged learning rates (1e-3 down to 1e-4, patience shrinking each stage), 10% of train held out for validation, best-val-loss weights kept, early stopping. Weights are then quantized to int8 and appended to the backbone graph. The hidden ReLU output is requantized to int8 with scale 127/`hidden_max`, where `hidden_max` is the 99.9th percentile of that output on 4096 train rows at the best checkpoint (the top 0.1% is clipped).
-- **Output.** The label is the argmax of the logits and the engine also returns the logits. Sigmoid is monotonic, so the top logit gives the top confidence; the classes are independent, so confidences do not sum to 1. The engine contains no `exp()`.
 
 ## Limits
 
 - The engine is specific to the GPU and TensorRT version that built it.
 - Input is resized straight to 224x224 with plain bilinear (no antialiasing, aspect ratio not kept), no crop, in training and inference. Fine for small or square images, it aliases when downscaling large photos. The engine takes sides up to 512, bigger images are shrunk to 512 on the CPU first (antialiased). Batch at most 64.
 - The normalization at the start of the engine, the global-average-pool, the bias add and the final scaling of the logits are float operations on integer values. TensorRT has no `MatMulInteger` or `BitShift`.
-- Accuracy numbers come from single runs and are not tuned.
+- Accuracy numbers are not tuned.
