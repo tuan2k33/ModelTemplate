@@ -54,7 +54,7 @@ Speed on an RTX 3050 Ti Laptop (4 GB), TensorRT 11.4, CUDA 13:
 
 ## Usage
 
-The backbone is a ready INT8 Q/DQ ONNX downloaded from the Hugging Face Hub on first use (`huggingface_hub`; `HF_TOKEN` from the environment or the project `.env`): `--backbone resnet50` (default, from the ONNX Model Zoo `resnet50-v1-12-int8`) or `--backbone convnext` (DINOv3 ConvNeXt-Tiny), both in the [tuannw/ModelTemplate](https://huggingface.co/tuannw/ModelTemplate) repo with its model card and license; `export.py` rebuilds both from the upstream models and pushes them. The datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `data/`. Run from `IntClassifier/`:
+The backbone is a ready INT8 Q/DQ ONNX downloaded from the Hugging Face Hub on first use (`huggingface_hub`, public repo, no token needed): `--backbone resnet50` (default, from the ONNX Model Zoo `resnet50-v1-12-int8`) or `--backbone convnext` (DINOv3 ConvNeXt-Tiny), both in the [tuannw/ModelTemplate](https://huggingface.co/tuannw/ModelTemplate) repo with its model card and license; `export.py` rebuilds both from the upstream models and pushes them. The datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `data/`. Run from `IntClassifier/`:
 
 ```bash
 python train.py cifar10

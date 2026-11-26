@@ -168,12 +168,12 @@ def compile_engine(onnx_path, engine_path):
     assert r.returncode == 0, "\n".join(l for l in r.stdout.splitlines() if "[E]" in l)
 
 
-HUB = "tuannw/ModelTemplate"  # private HF repo, one folder per model
+HUB = "tuannw/ModelTemplate"  # public HF repo, one folder per model
 BACKBONES = {"resnet50": "resnet50-qdq-int8", "convnext": "dinov3-convnext-tiny-qdq-int8"}  # folder = file stem, built by export.py
 
 
 def backbone_onnx(name):
-    """The backbone Q/DQ ONNX from the Hub (private repos: HF_TOKEN from the environment or the project .env), cached by huggingface_hub."""
+    """The backbone Q/DQ ONNX from the Hub (public; HF_TOKEN from the environment or the project .env is used if set), cached by huggingface_hub."""
     from huggingface_hub import hf_hub_download
     token = os.environ.get("HF_TOKEN")
     if not token and Path("../.env").exists():

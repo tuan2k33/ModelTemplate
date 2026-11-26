@@ -2,7 +2,7 @@
 built once from the upstream weights and pushed to the Hugging Face Hub, so training a head only needs the file:
     python export.py resnet50            # ONNX Model Zoo resnet50-v1-12-int8 (QLinear) -> weight/backbone/resnet50-qdq-int8.onnx, D=2048
     python export.py convnext            # facebook/dinov3-convnext-tiny-pretrain-lvd1689m -> weight/backbone/dinov3-convnext-tiny-qdq-int8.onnx, D=768
-    python export.py push [resnet50|convnext]   # into the private HF repo model.HUB, folder <file stem>/, with the license and a model card
+    python export.py push [resnet50|convnext]   # into the HF repo model.HUB (needs a write HF_TOKEN), folder <file stem>/, with the license and a model card
 ConvNeXt: Q/DQ only where int8 math runs, the activation input and the weight of the stem/downsample MatMuls and the pointwise Linears (40 of 58).
 Depthwise convs stay FP16 (the most sensitive layers, and int8 depthwise was slower on TensorRT: layout changes around it); LayerNorm, GELU and the
 residual stream stay FP16 with no Q/DQ around them (TensorRT fuses GELU into the first pointwise GEMM and the following Q into LayerNorm).
@@ -248,7 +248,7 @@ def push(which):
     meta = {p.key: p.value for p in onnx.load(path, load_external_data=False).metadata_props}
     dim = onnx.load(path).graph.output[0].type.tensor_type.shape.dim[1].dim_value
     api = HfApi(token=os.environ["HF_TOKEN"])
-    api.create_repo(HUB, private=True, exist_ok=True)
+    api.create_repo(HUB, private=False, exist_ok=True)
     if which == "convnext":
         lic = Path(hf_hub_download(CONVNEXT, "LICENSE.md", token=os.environ["HF_TOKEN"]))
         files, license_, license_text = {"LICENSE.md": lic}, "other", "DINOv3 License, see [LICENSE.md](LICENSE.md): this model is a derivative of the DINO Materials and is distributed under that Agreement."

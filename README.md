@@ -17,13 +17,13 @@ The INT8 Q/DQ ONNX models are in [tuannw/ModelTemplate](https://huggingface.co/t
 
 ## Setup
 
-Needs an NVIDIA GPU, CUDA 13, Python 3.14, PyTorch with CUDA, TensorRT 11 (Python package and `trtexec` on `PATH`), `onnx`, `onnxruntime`, `cuda-python`, `torchvision`, `opencv-python`, `huggingface_hub`, and per project `ultralytics` (Detector, OCR, Motion) or `h5py` (OCR/dewarp benchmark). Datasets and Model Zoo weights are downloaded on first use with `curl`. A Hugging Face token (`HF_TOKEN` in the environment or in `.env`) is needed for the private backbones. Every script runs from inside its own folder and writes to its `data/`, `cache/` and `weight/` (git-ignored).
+Needs an NVIDIA GPU, CUDA 13, Python 3.14, PyTorch with CUDA, TensorRT 11 (Python package and `trtexec` on `PATH`), `onnx`, `onnxruntime`, `cuda-python`, `torchvision`, `opencv-python`, `huggingface_hub`, and per project `ultralytics` (Detector, OCR, Motion) or `h5py` (OCR/dewarp benchmark). Datasets and Model Zoo weights are downloaded on first use with `curl`. The Hugging Face repo is public, no token needed to download. Every script runs from inside its own folder and writes to its `data/`, `cache/` and `weight/` (git-ignored).
 
 Measurements in the READMEs come from an RTX 3050 Ti Laptop (4 GB) with TensorRT 11.4 or 11.5 (stated where it matters). Engines are tied to the GPU and TensorRT version that built them.
 
 ## Licenses
 
-No license file for the code yet. The models keep their own licenses: YOLO26 is AGPL-3.0 (Ultralytics), DINOv3 under the DINOv3 License, PeopleNet under the NVIDIA Open Model License, the ONNX Model Zoo models under Apache-2.0; see the model cards on Hugging Face.
+The code is licensed under the [GNU AGPL-3.0](LICENSE) (as Ultralytics YOLO26, which Detector, OCR and Motion build on). The models keep their own licenses: YOLO26 is AGPL-3.0 (Ultralytics), DINOv3 under the DINOv3 License, PeopleNet under the NVIDIA Open Model License, the ONNX Model Zoo models under Apache-2.0; see the model cards on Hugging Face.
 
 ## AI Disclosure
 
