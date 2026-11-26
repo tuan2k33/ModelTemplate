@@ -81,3 +81,7 @@ Your own data: put it in `<root>/train/<class>/` and `<root>/test/<class>/` (sam
 - Input is resized straight to 224x224 with plain bilinear (no antialiasing, aspect ratio not kept), no crop, in training and inference. Fine for small or square images, it aliases when downscaling large photos. The engine takes sides up to 512, bigger images are shrunk to 512 on the CPU first (antialiased). Batch at most 64.
 - The normalization at the start of the engine, the global-average-pool, the bias add and the final scaling of the logits are float operations on integer values. TensorRT has no `MatMulInteger` or `BitShift`.
 - Accuracy numbers are not tuned.
+
+## AI Disclosure
+
+Written with Claude Code (Anthropic) under the author's direction: the author chooses what to build and which approaches to keep or drop, and reviews the results. The measurements quoted in the READMEs come from runs on the author's machine.
