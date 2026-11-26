@@ -26,7 +26,7 @@ ann, z, cat, eng = COCO(str(ann_file)), zipfile.ZipFile(COCO_DIR / "val2017.zip"
 names = sorted(n for n in z.namelist() if n.endswith(".jpg"))[a.start:][:a.limit]
 res = []
 for n in names:
-    g = decode_jpeg(torch.frombuffer(bytearray(z.read(n)), dtype=torch.uint8), device="cuda", mode=ImageReadMode.RGB).permute(1, 2, 0)  # HWC uint8 on the GPU
+    g = decode_jpeg(torch.frombuffer(bytearray(z.read(n)), dtype=torch.uint8), mode=ImageReadMode.RGB).cuda().permute(1, 2, 0)  # HWC uint8 on the GPU
     r, left, top = letterbox(*g.shape[:2])
     res += [dict(image_id=int(Path(n).stem), category_id=cat[int(c)], bbox=[(x1 - left) / r, (y1 - top) / r, (x2 - x1) / r, (y2 - y1) / r], score=float(s))
             for x1, y1, x2, y2, s, c in eng(g[None])[0][0] if s >= 0.001]
