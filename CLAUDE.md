@@ -4,14 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-ModelTemplate turns pre-quantized / pretrained models into **single TensorRT engines** where pre-processing runs inside the engine (raw `uint8` image in). Independent sub-projects. Read the README (results, options, limits) before changing one that has it:
+ModelTemplate turns pre-quantized / pretrained models into **single TensorRT engines** where pre-processing runs inside the engine (raw `uint8` image in). Independent sub-projects, each with its own README (results, options, limits); read it before changing one. The root README is only the overview and the HF link:
 
 - `IntClassifier/` — frozen INT8 backbone (ResNet50 or DINOv3 ConvNeXt-T, Q/DQ ONNX pulled from the user's HF repos, built by `export.py`) + small MLP head trained on cached embeddings.
 - `Detector/` — YOLO26 FP16 engine with the letterbox built into the graph. INT8 is only an option (`quantize.py`, hand-placed Q/DQ, SiLU float or as an int8 lookup table); it is slower than FP16 here, see its README.
 - `OCR/` — work in progress: YOLO26 text-line detector fine-tuned on SROIE (`det.py`, engine built with `../Detector/train.py`) a deskew benchmark (`deskew.py`) and `dewarp/` (photo of a curved page -> flat A4 on the CPU: image-processing boundary + homography/Coons remap; optional YOLO26n-pose paper keypoints, paused; plan in its README). No recognizer yet.
 - `FaceID/` — ArcFace ResNet100 INT8 → QDQ engine, evaluated on LFW / CFP-FP / AgeDB-30 (`eval.py` only, no train).
-- `Motion/` — background model for fixed cameras as a stateful TensorRT engine (no trained weights); the module docstrings in `model.py`, `run.py`, `build.py` document inputs, state layout and options. No README.
-- `peoplenet/` — scratch experiments (NGC PeopleNet INT8 CNN, `run.py`, `patch_qdq.py`), git-ignored, not part of the shipped code.
+- `Motion/` — background model for fixed cameras as a stateful TensorRT engine (no trained weights); see its README; the module docstrings in `model.py`, `run.py`, `build.py` document inputs, state layout and options.
+- `peoplenet/` — NGC PeopleNet INT8: `patch_qdq.py` (calibration cache -> explicit Q/DQ, result on HF), `run.py` (video demo). Only the code is in git; the NGC files (`cnn/`, `cnn_int8/`, NVIDIA license) and outputs are ignored.
 
 ## Running
 
