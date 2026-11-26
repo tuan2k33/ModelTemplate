@@ -1,0 +1,5 @@
+cnn/
+cnn_int8/
+*.mp4
+*.npy
+__pycache__/
