@@ -168,7 +168,7 @@ def compile_engine(onnx_path, engine_path):
     assert r.returncode == 0, "\n".join(l for l in r.stdout.splitlines() if "[E]" in l)
 
 
-HUB = "tuannw/ModelEdge"  # private HF repo, one folder per model
+HUB = "tuannw/ModelTemplate"  # private HF repo, one folder per model
 BACKBONES = {"resnet50": "resnet50-qdq-int8", "convnext": "dinov3-convnext-tiny-qdq-int8"}  # folder = file stem, built by export.py
 
 

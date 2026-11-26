@@ -218,7 +218,7 @@ def save(which):
 
 CARD = """# {name}
 
-INT8 Q/DQ ONNX backbone for [ModelEdge IntClassifier](https://github.com/tuan2k33/ModelEdge): a frozen feature extractor that TensorRT builds into one INT8 engine.
+INT8 Q/DQ ONNX backbone for [ModelTemplate IntClassifier](https://github.com/tuan2k33/ModelTemplate): a frozen feature extractor that TensorRT builds into one INT8 engine.
 
 - Input `image`: uint8 [N, H, W, 3] RGB, any size; resize to 224x224 (bilinear) and ImageNet normalization run inside the graph.
 - Output `feat_q`: int8 [N, {dim}]; the embedding is `feat_q * feat_scale` (`feat_scale` = {feat_scale:.6g}, also in the ONNX metadata).

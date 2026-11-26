@@ -1,4 +1,4 @@
-# ModelEdge
+# ModelTemplate
 
 A small INT8 image classifier built from a frozen, pre-quantized ResNet50 and a small MLP head you train in under a minute.
 The result is **one TensorRT engine**: raw `uint8` image in, label and per-class logits out, all on the GPU.
@@ -54,7 +54,7 @@ Speed on an RTX 3050 Ti Laptop (4 GB), TensorRT 11.4, CUDA 13:
 
 ## Usage
 
-The backbone is a ready INT8 Q/DQ ONNX downloaded from the Hugging Face Hub on first use (`huggingface_hub`; `HF_TOKEN` from the environment or the project `.env`): `--backbone resnet50` (default, from the ONNX Model Zoo `resnet50-v1-12-int8`) or `--backbone convnext` (DINOv3 ConvNeXt-Tiny), both in the [tuannw/ModelEdge](https://huggingface.co/tuannw/ModelEdge) repo with its model card and license; the PeopleNet INT8 detector is there too. `export.py` rebuilds both from the upstream models and pushes them. The datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `IntClassifier/data/`. Run from `IntClassifier/`:
+The backbone is a ready INT8 Q/DQ ONNX downloaded from the Hugging Face Hub on first use (`huggingface_hub`; `HF_TOKEN` from the environment or the project `.env`): `--backbone resnet50` (default, from the ONNX Model Zoo `resnet50-v1-12-int8`) or `--backbone convnext` (DINOv3 ConvNeXt-Tiny), both in the [tuannw/ModelTemplate](https://huggingface.co/tuannw/ModelTemplate) repo with its model card and license; the PeopleNet INT8 detector is there too. `export.py` rebuilds both from the upstream models and pushes them. The datasets are downloaded on first use with `curl`, so it must be installed. Datasets live in `IntClassifier/data/`. Run from `IntClassifier/`:
 
 ```bash
 cd IntClassifier
