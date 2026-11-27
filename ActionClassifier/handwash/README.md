@@ -40,7 +40,9 @@ All 211 videos with MediaPipe VIDEO 0.5: 0/1/2 hands per step 1-6: 15/71/14, 9/8
 - rotated 224x224 crop with `GridSample` (edge pixels repeated: closer to MediaPipe than zeros, median landmark error 1.5-3.4 px vs 2-5 px), landmark model at batch 2;
 - landmarks back to the frame, next rect from 12 landmarks (x2.0, shifted 0.1 up) -> `state_out`.
 
-RTX 3050 Ti Laptop, TensorRT 11.5: 1.08 ms per frame for everything (palm detector alone 0.59 ms FP16 / 0.78 FP32, landmarks 0.33 / 0.53 ms per hand). Against MediaPipe on the CPU (~50 ms/frame): hand recall 48% vs 51% on 12 videos, step-2 frames with 0/1/2 hands 4/88/8 vs 3/89/8; the differences are mostly palms right at the 0.5 threshold, after which the two trackers follow different hands. The classifier trained on the engine's landmarks scores the same as on MediaPipe's (70.6 / 71.3 vs 70.7 / 70.2, two seeds). `check_hands.py` compares the same graph run eagerly (onnxruntime) with the CPU landmarks.
+RTX 3050 Ti Laptop, TensorRT 11.5: 1.08 ms of GPU time per frame for everything (palm detector alone 0.59 ms FP16 / 0.78 FP32, landmarks 0.33 / 0.53 ms per hand). Against MediaPipe on the CPU (~50 ms/frame): hand recall 48% vs 51% on 12 videos, step-2 frames with 0/1/2 hands 4/88/8 vs 3/89/8; the differences are mostly palms right at the 0.5 threshold, after which the two trackers follow different hands. The classifier trained on the engine's landmarks scores the same as on MediaPipe's (70.6 / 71.3 vs 70.7 / 70.2, two seeds). `check_hands.py` compares the same graph run eagerly (onnxruntime) with the CPU landmarks.
+
+Launched from Python the engine costs ~4.5 ms of CPU per frame (200+ small layers to enqueue, while trtexec enqueues it in 0.07 ms), so `hands.Engine` captures it once in a CUDA graph and replays it (0.01 ms CPU): the whole loop of `run.landmarks` (OpenCV decode 1.1 ms, upload, engine) went from 10.6 to 3.5 ms per frame. Decoding is not the bottleneck: OpenCV reads 640x480 at ~690 fps and 320x240 at ~1700 fps (video-reader-rs from pip was slower on the CPU and its FFmpeg has no CUDA filters).
 
 Two TensorRT details: it does not transpose uint8 (cast first), and ArgMax needs a 2-d input. The classifier engine stays FP32 (330k parameters, 0.27 ms for 64 windows); converting it to FP16 left mixed types in the normalization that TensorRT rejects.
 
@@ -77,7 +79,7 @@ python eval.py weight/tcn-r10-s1-center weight/tcn-r10-s2  # whole videos: frame
 python extract.py --mode engine --fps 20                 # METC re-encoded to 20 fps first; train with --kpt cache/kpt-engine-0.5-20fps --src-fps 20
 ```
 
-`run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~6 ms per frame with OpenCV decoding, which dominates), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
+`run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~3.5 ms per frame with decoding), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
 
 ## Window length and frame rate
 

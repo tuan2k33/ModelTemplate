@@ -211,8 +211,11 @@ def networks():
     return out
 
 
-def export(path, height=480, width=640, opset=17):
-    """One ONNX: frame uint8 [height,width,3] + state [2,7] -> landmarks [2,21,3], present [2], state_out [2,7]."""
+def export(path, height=480, width=640, opset=17, det_thr=DET_THR, present_thr=PRESENT_THR):
+    """One ONNX: frame uint8 [height,width,3] + state [2,7] -> landmarks [2,21,3], present [2], state_out [2,7].
+    det_thr / present_thr: palm score for a new hand and landmark presence to keep one (baked into the graph)."""
+    global DET_THR, PRESENT_THR
+    DET_THR, PRESENT_THR = det_thr, present_thr
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / "tmp.onnx"
@@ -260,19 +263,27 @@ def compile_engine(onnx_path, engine_path):
 
 
 class Engine:
-    """uint8 frame [H,W,3] cuda tensor -> landmarks [2,21,3], present [2] (cuda tensors, reused between calls). Keeps the tracking state of one camera."""
+    """uint8 frame [H,W,3] cuda tensor -> landmarks [2,21,3], present [2] (cuda tensors, reused between calls). Keeps the tracking state of one camera.
+    The engine runs as a CUDA graph: launched from Python it costs ~4.5 ms of CPU per frame (200+ small layers), replayed 0.01 ms.
+    Call it on a non-default CUDA stream (torch.cuda.set_stream); nothing is synchronized, the outputs are ready in stream order."""
 
     def __init__(self, path):
         e = runtime().deserialize_cuda_engine(Path(path).read_bytes())
         self.ctx = e.create_execution_context()
         self.state, self.next = torch.zeros(2, 7, device="cuda"), torch.zeros(2, 7, device="cuda")
         self.lm, self.present = torch.zeros(2, 21, 3, device="cuda"), torch.zeros(2, device="cuda")
-        for n, t in (("state", self.state), ("state_out", self.next), ("landmarks", self.lm), ("present", self.present)):
+        self.frame = torch.zeros(tuple(e.get_tensor_shape("frame")), dtype=torch.uint8, device="cuda")
+        for n, t in (("frame", self.frame), ("state", self.state), ("state_out", self.next), ("landmarks", self.lm), ("present", self.present)):
             self.ctx.set_tensor_address(n, t.data_ptr())
+        s = torch.cuda.current_stream()
+        assert self.ctx.execute_async_v3(s.cuda_stream)  # first run outside the graph (TensorRT may allocate)
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(self.graph, stream=s):
+            self.ctx.execute_async_v3(s.cuda_stream)
+            self.state.copy_(self.next)
+        self.state.zero_()
 
     def __call__(self, frame):
-        frame = frame.contiguous()
-        self.ctx.set_tensor_address("frame", frame.data_ptr())
-        assert self.ctx.execute_async_v3(torch.cuda.current_stream().cuda_stream)
-        self.state.copy_(self.next)
+        self.frame.copy_(frame)
+        self.graph.replay()
         return self.lm, self.present
