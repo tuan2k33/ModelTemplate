@@ -62,16 +62,20 @@ if __name__ == "__main__":
     torch.cuda.set_stream(torch.cuda.Stream())
     models = sys.argv[1:]
     clfs = {m: Classifier(m) for m in models}
-    res = {}
+    res, raw = {}, {}
     for name, vids in sets().items():
         for v, ref in vids:
             _, _, x, p, fps, H, W, _ = landmarks(v)
             ref = ref[:len(x)]
             for m in models:
                 rate, sec, anchor, interp = model_window(m)
-                _, sm = classify(clfs[m], x, p, fps, H, W, rate, sec, 1.0, anchor, interp)
+                prob, sm = classify(clfs[m], x, p, fps, H, W, rate, sec, 1.0, anchor, interp)
                 res.setdefault((name, m), []).append((ref, sm.argmax(1).cpu().numpy()[:len(ref)], fps))
+                raw.setdefault(m, []).append(dict(set=name, video=v.stem, fps=fps, ref=ref, prob=prob.cpu().numpy()[:len(ref)]))
         print(name, "done", flush=True)
+    for m, rows in raw.items():  # per-frame probabilities (no smoothing) for post-processing: post.py
+        Path("cache/probs").mkdir(parents=True, exist_ok=True)
+        np.save(f"cache/probs/{Path(m).name}.npy", np.array(rows, dtype=object), allow_pickle=True)
     print("\naccuracy / macro, strict | +-0.5 s")
     print("model".ljust(28) + "METC val".ljust(32) + "PSKUS 30 fps")
     for m in models:

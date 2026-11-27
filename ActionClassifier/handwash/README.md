@@ -149,6 +149,19 @@ What matters in use is whether a wash missed a step. Per video, a step is done w
 
 Requiring 2 s of a step before calling it done catches more missing steps (22 / 31, 83 / 90) for about twice the false alarms; `eval.py` prints 0.5, 1 and 2 s for every model. Only 5 of the 30 PSKUS videos are complete washes, so the last line there is thin.
 
+## Post-processing
+
+`eval.py` saves the per-frame probabilities (cache/probs/<model>.npy, `run.py --csv` writes the same for one video) and `post.py` tries rules on them. 10 fps x 1 s, middle, PSKUS:
+
+| After the probabilities | strict | +-0.5 s | missing steps caught | false alarms | incomplete washes caught |
+|---|---|---|---|---|---|
+| mean over 1 s (run.py) | 85.3 / 70.9 | 88.2 / 77.3 | 74 / 90 | 12 / 90 | 23 / 25 |
+| "other" only in the first and last 5 s | 39.1 / 68.7 | 41.9 / 73.1 | 33 / 90 | 5 / 90 | 14 / 25 |
+| inside the wash (first to last 1 s of steps), next best step when P(other) <= 0.5 | 81.1 / 74.4 | 83.9 / 80.2 | 66 / 90 | 10 / 90 | 22 / 25 |
+| HMM, step order from METC training labels | 75.0 / 74.6 | 77.8 / 79.6 | 50 / 90 | 10 / 90 | 19 / 25 |
+
+"Other" is not only at the ends: 10-16% of the frames between the first and last step, and PSKUS staff spend a median 31 s after the last step (rinsing, drying, the tap). Replacing "other" by a step raises the macro but reports steps that were not done, so fewer incomplete washes are caught: keep the plain mean to judge a wash, use the in-wash rule only to draw a cleaner timeline.
+
 ## Limits
 
 - Only routine / antiseptic hand washing (one model). Surgical scrub needs its own data: no public RGB set with step labels was found (MIVIA's surgical hand-washing set is depth only).
