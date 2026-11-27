@@ -19,7 +19,7 @@ from train import STEPS
 ap = argparse.ArgumentParser()
 ap.add_argument("--videos", type=int, default=30)
 ap.add_argument("--fps", type=int, nargs="+", default=[30, 25, 10])
-ap.add_argument("--models", default="weight/tcn-r*")
+ap.add_argument("--models", nargs="+", default=["weight/tcn-r*"])
 a = ap.parse_args()
 torch.cuda.set_stream(torch.cuda.Stream())
 src = Path("data/handwash/pskus/DataSet7")
@@ -27,7 +27,7 @@ ann = {}
 for f in sorted(glob.glob(str(src / "Annotations/*/*.json"))):
     ann.setdefault(Path(f).stem, f)
 vids = sorted(v for v in src.glob("Videos/*.mp4") if v.stem in ann)[::max(1, len(ann) // a.videos)][:a.videos]
-models = sorted(glob.glob(a.models), key=lambda m: (-model_window(m)[0], model_window(m)[1]))
+models = sorted({m for g in a.models for m in glob.glob(g)}, key=lambda m: (-model_window(m)[0], model_window(m)[1]))
 clfs = {m: Classifier(m) for m in models}
 out = Path("out/fps")
 out.mkdir(parents=True, exist_ok=True)

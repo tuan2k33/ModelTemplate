@@ -172,7 +172,7 @@ if __name__ == "__main__":
     ap.add_argument("--drop", type=float, default=0.3)
     ap.add_argument("--rot", type=float, default=180, help="random rotation range in degrees when training, 0 = off")
     ap.add_argument("--seconds", type=float, default=2, help="window length")
-    ap.add_argument("--rate", type=int, default=16, choices=[16, 8, 4], help="frames per second inside the window (METC is 16 fps: 8 takes every 2nd frame)")
+    ap.add_argument("--rate", type=int, default=16, help="frames per second inside the window, at most 16 (METC's rate; resampled to the nearest frame)")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name")
@@ -180,8 +180,10 @@ if __name__ == "__main__":
     torch.manual_seed(a.seed)
     dev = "cuda"
     a.frames = round(a.rate * a.seconds)
-    step = 16 // a.rate
-    seqs = [(i, lm[o::step], p[o::step], l[o::step]) for i, lm, p, l in load(a.kpt) for o in range(step)]  # every phase of the subsampling
+    # resample METC's 16 fps to --rate (nearest frame), every phase of it: 8 fps -> frames 0,2,4.. and 1,3,5..; 10 fps -> 0,2,3,5,6.. and 1,2,4,..
+    P = max(1, round(16 / a.rate))
+    take = lambda n, o: np.unique(np.minimum(np.round((np.arange(int(n * a.rate / 16)) + o / P) * 16 / a.rate), n - 1).astype(int))
+    seqs = [(i, lm[k], p[k], l[k]) for i, lm, p, l in load(a.kpt) for o in range(P) for k in [take(len(l), o)]]
     val = [s for s in seqs if s[0] % 5 == 0]
     tr = windows([s for s in seqs if s[0] % 5], a.frames, 2, dev)
     va = windows(val, a.frames, 4, dev)

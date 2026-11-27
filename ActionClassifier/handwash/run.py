@@ -120,7 +120,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
     ap.add_argument("--out", help="video with landmarks and step (H264)")
-    ap.add_argument("--model", default="weight/tcn-r8-s2", help="folder of a train.py run (8 fps x 2 s: best across datasets and frame rates)")
+    ap.add_argument("--model", default="weight/tcn-r10-s2", help="folder of a train.py run (10 fps x 2 s; 8 fps x 2 s is within a point)")
     ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
     ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
     ap.add_argument("--window", default="model", choices=["model", "native"],
