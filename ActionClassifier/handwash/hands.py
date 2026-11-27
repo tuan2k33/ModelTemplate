@@ -1,10 +1,11 @@
 """MediaPipe HandLandmarker (VIDEO mode, 2 hands) rebuilt as one ONNX graph for TensorRT.
 
-uint8 frame [H,W,3] RGB + state [2,7] (zeros at the start)
+uint8 frame [H,W,3] RGB + state [2,11] (zeros at the start)
   -> palm detector 192x192 (letterbox) -> 2016 anchors decoded, weighted NMS kept to 2 hands with fixed shapes
   -> per slot: hand tracked from the previous frame (state) or a new palm, rotated crop 224x224 (GridSample)
   -> landmark model, batch 2 -> landmarks back to the frame
-  -> landmarks [2,21,3] (x, y in [0,1] of the frame, z), present [2], state_out [2,7] (cx, cy, w, h in pixels, cos, sin, valid)
+  -> landmarks [2,21,3] (x, y in [0,1] of the frame, z), present [2], state_out [2,11] (rect cx, cy, w, h in pixels, cos, sin, valid,
+     wrist x, y and middle knuckle x, y in pixels)
 
 The two networks are MediaPipe's own (hand_landmarker.task, converted with tf2onnx), weights in FP16; the steps between them
 follow MediaPipe's graph: palm rect scaled 2.6 and shifted -0.5 up, tracking rect from 12 landmarks scaled 2.0 and shifted -0.1,
@@ -22,7 +23,10 @@ from onnx import helper as h
 
 MP = Path("cache/mp")
 DET, LM = 192, 224
-DET_THR, PRESENT_THR, NMS_IOU, TRACK_IOU = 0.5, 0.5, 0.3, 0.5
+DET_THR, PRESENT_THR, NMS_IOU, TRACK_IOU = 0.3, 0.3, 0.3, 0.5  # MediaPipe uses 0.5; 0.3 with landmark dedup: hand recall 51 -> 67-69% (thr_test.py)
+# Duplicates (the same hand twice): "landmarks" compares wrists / landmarks, so two real hands on top of each other (box IoU
+# well above 0.5 while washing) stay two hands; "iou" is MediaPipe's box overlap. Distances are in hand sizes (wrist -> middle knuckle).
+DEDUP, SAME_PALM, SAME_LM = "landmarks", 0.5, 0.25
 SUBSET = [0, 1, 2, 3, 5, 6, 9, 10, 13, 14, 17, 18]  # landmarks MediaPipe uses for the tracking rect
 
 
@@ -114,10 +118,15 @@ class Mid(torch.nn.Module):
         p = torch.stack(picks)  # [2,9]: box, kp0, kp2, score
         cos, sin = rotation(p[:, 4], p[:, 5], p[:, 6], p[:, 7])
         cx, cy, w, h = transform(p[:, 0], p[:, 1], p[:, 2], p[:, 3], cos, sin, 2.6, -0.5)
-        det = torch.stack([cx, cy, w, h, cos, sin, (p[:, 8] > 0).float()], 1)  # [2,7]
+        det = torch.stack([cx, cy, w, h, cos, sin, (p[:, 8] > 0).float(), p[:, 4], p[:, 5], p[:, 6], p[:, 7]], 1)  # [2,11]
         # palms on a tracked hand are that hand
         tv = state[:, 6]
-        over = (iou(tuple(det[:, None, k] for k in range(4)), tuple(state[None, :, k] for k in range(4))) > TRACK_IOU) * tv[None, :]
+        if DEDUP == "iou":
+            over = (iou(tuple(det[:, None, k] for k in range(4)), tuple(state[None, :, k] for k in range(4))) > TRACK_IOU) * tv[None, :]
+        else:  # palm wrist and middle knuckle near the tracked hand's
+            d = lambda i, j: torch.sqrt((det[:, None, i] - state[None, :, i]) ** 2 + (det[:, None, j] - state[None, :, j]) ** 2)
+            size = torch.sqrt((state[:, 7] - state[:, 9]) ** 2 + (state[:, 8] - state[:, 10]) ** 2).clamp(min=1)[None, :]
+            over = ((d(7, 8) + d(9, 10)) / 2 < SAME_PALM * size) * tv[None, :]
         dv = det[:, 6] * (over.sum(1) == 0)
         # empty slots take the new palms in score order
         d0 = dv[0] > 0
@@ -130,7 +139,7 @@ class Mid(torch.nn.Module):
         took0 = s0_empty & (n_new > 0)
         cand1 = torch.where(took0, second * (dv[0] > 0) * (dv[1] > 0), first * (n_new > 0))
         slot1 = torch.where(tv[1] == 0, cand1, state[1])
-        rect = torch.stack([slot0, slot1])  # [2,7]
+        rect = torch.stack([slot0, slot1])  # [2,11]
         x = crop(img, rect[:, 0], rect[:, 1], rect[:, 2].clamp(min=1), rect[:, 3].clamp(min=1), rect[:, 4], rect[:, 5], LM, "border")  # border matches MediaPipe CPU best (1.5-3.4 px vs 2-5 px with zeros)
         return x.permute(0, 2, 3, 1), rect
 
@@ -140,7 +149,7 @@ class Post(torch.nn.Module):
 
     def forward(self, img, lm, flag, rect):
         H, W = img.shape[2], img.shape[3]
-        cx, cy, w, h, cos, sin, valid = rect.unbind(1)
+        cx, cy, w, h, cos, sin, valid = rect[:, :7].unbind(1)
         q = lm.view(2, 21, 3) / LM
         u, v = q[..., 0] - 0.5, q[..., 1] - 0.5
         r = lambda a: a[:, None]
@@ -161,9 +170,14 @@ class Post(torch.nn.Module):
         nw, nh = rx.amax(1) - rx.amin(1), ry.amax(1) - ry.amin(1)
         ncx, ncy = pcx * c - pcy * s + ax, pcx * s + pcy * c + ay
         ncx, ncy, nw, nh = transform(ncx, ncy, nw, nh, c, s, 2.0, -0.1)
-        nxt = torch.stack([ncx, ncy, nw, nh, c, s, present], 1)
+        nxt = torch.stack([ncx, ncy, nw, nh, c, s, present, X[:, 0], Y[:, 0], X[:, 9], Y[:, 9]], 1)
         # two slots on the same hand: keep the first
-        same = (iou(tuple(nxt[0, k] for k in range(4)), tuple(nxt[1, k] for k in range(4))) > TRACK_IOU) * present[0] * present[1]
+        if DEDUP == "iou":
+            same = iou(tuple(nxt[0, k] for k in range(4)), tuple(nxt[1, k] for k in range(4))) > TRACK_IOU
+        else:  # all 21 landmarks nearly on top of each other
+            size = (torch.sqrt((X[:, 9] - X[:, 0]) ** 2 + (Y[:, 9] - Y[:, 0]) ** 2).mean()).clamp(min=1)
+            same = torch.sqrt((X[0] - X[1]) ** 2 + (Y[0] - Y[1]) ** 2).mean() < SAME_LM * size
+        same = same * present[0] * present[1]
         keep = torch.stack([present[0], present[1] * (1 - same)])
         nxt = nxt * keep[:, None]
         out = torch.stack([X / W, Y / H, Z / W], -1) * keep[:, None, None]
@@ -211,11 +225,11 @@ def networks():
     return out
 
 
-def export(path, height=480, width=640, opset=17, det_thr=DET_THR, present_thr=PRESENT_THR):
-    """One ONNX: frame uint8 [height,width,3] + state [2,7] -> landmarks [2,21,3], present [2], state_out [2,7].
-    det_thr / present_thr: palm score for a new hand and landmark presence to keep one (baked into the graph)."""
-    global DET_THR, PRESENT_THR
-    DET_THR, PRESENT_THR = det_thr, present_thr
+def export(path, height=480, width=640, opset=17, det_thr=DET_THR, present_thr=PRESENT_THR, dedup=DEDUP):
+    """One ONNX: frame uint8 [height,width,3] + state [2,11] -> landmarks [2,21,3], present [2], state_out [2,11].
+    det_thr / present_thr: palm score for a new hand and landmark presence to keep one; dedup: "landmarks" or "iou" (baked in)."""
+    global DET_THR, PRESENT_THR, DEDUP
+    DET_THR, PRESENT_THR, DEDUP = det_thr, present_thr, dedup
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / "tmp.onnx"
@@ -223,8 +237,8 @@ def export(path, height=480, width=640, opset=17, det_thr=DET_THR, present_thr=P
     parts = []
     for mod, args, ins, outs in (
             (Pre(), (frame,), ["frame"], ["det_in", "img"]),
-            (Mid(), (img, torch.zeros(1, 2016, 18), torch.zeros(1, 2016, 1), torch.zeros(2, 7)), ["img", "raw_box", "raw_score", "state"], ["crops", "rect"]),
-            (Post(), (img, torch.zeros(2, 63), torch.zeros(2, 1), torch.zeros(2, 7)), ["img", "lm", "flag", "rect"], ["landmarks", "present", "state_out"])):
+            (Mid(), (img, torch.zeros(1, 2016, 18), torch.zeros(1, 2016, 1), torch.zeros(2, 11)), ["img", "raw_box", "raw_score", "state"], ["crops", "rect"]),
+            (Post(), (img, torch.zeros(2, 63), torch.zeros(2, 1), torch.zeros(2, 11)), ["img", "lm", "flag", "rect"], ["landmarks", "present", "state_out"])):
         torch.onnx.export(mod, args, str(tmp), dynamo=False, opset_version=opset, input_names=ins, output_names=outs)
         parts.append((onnx.load(tmp), {k: k for k in ins + outs}))
     tmp.unlink()
@@ -265,23 +279,27 @@ def compile_engine(onnx_path, engine_path):
 class Engine:
     """uint8 frame [H,W,3] cuda tensor -> landmarks [2,21,3], present [2] (cuda tensors, reused between calls). Keeps the tracking state of one camera.
     The engine runs as a CUDA graph: launched from Python it costs ~4.5 ms of CPU per frame (200+ small layers), replayed 0.01 ms.
-    Call it on a non-default CUDA stream (torch.cuda.set_stream); nothing is synchronized, the outputs are ready in stream order."""
+    Nothing is synchronized: the outputs are ready in the order of the current stream."""
 
     def __init__(self, path):
         e = runtime().deserialize_cuda_engine(Path(path).read_bytes())
         self.ctx = e.create_execution_context()
-        self.state, self.next = torch.zeros(2, 7, device="cuda"), torch.zeros(2, 7, device="cuda")
+        k = tuple(e.get_tensor_shape("state"))  # [2,11]; [2,7] for engines built before landmark dedup
+        self.state, self.next = torch.zeros(k, device="cuda"), torch.zeros(k, device="cuda")
         self.lm, self.present = torch.zeros(2, 21, 3, device="cuda"), torch.zeros(2, device="cuda")
         self.frame = torch.zeros(tuple(e.get_tensor_shape("frame")), dtype=torch.uint8, device="cuda")
         for n, t in (("frame", self.frame), ("state", self.state), ("state_out", self.next), ("landmarks", self.lm), ("present", self.present)):
             self.ctx.set_tensor_address(n, t.data_ptr())
-        s = torch.cuda.current_stream()
-        assert self.ctx.execute_async_v3(s.cuda_stream)  # first run outside the graph (TensorRT may allocate)
-        self.graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(self.graph, stream=s):
-            self.ctx.execute_async_v3(s.cuda_stream)
-            self.state.copy_(self.next)
-        self.state.zero_()
+        s = torch.cuda.Stream()  # a graph is captured on a non-default stream; it replays on any
+        torch.cuda.synchronize()
+        with torch.cuda.stream(s):
+            assert self.ctx.execute_async_v3(s.cuda_stream)  # first run outside the graph (TensorRT may allocate)
+            self.graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.graph, stream=s):
+                self.ctx.execute_async_v3(s.cuda_stream)
+                self.state.copy_(self.next)
+            self.state.zero_()
+        torch.cuda.synchronize()
 
     def __call__(self, frame):
         self.frame.copy_(frame)

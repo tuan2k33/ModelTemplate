@@ -68,7 +68,7 @@ def verdict(ref, lab, fps, need, thr):
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", nargs="+", default=["weight/tcn-r10-s1-center"])
+    ap.add_argument("--models", nargs="+", default=["weight/tcn-r10-s1-center-v2"])
     a = ap.parse_args()
     torch.cuda.set_stream(torch.cuda.Stream())
     vids = cached()
