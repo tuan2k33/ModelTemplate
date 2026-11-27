@@ -10,7 +10,7 @@ video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tr
          normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
 ```
 
-Default model 16 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.9% of frames right, macro 71.9 (88.7 / 78.5 allowing +-0.5 s at step changes); on METC validation (14 people never seen in training) 68.8 / 65.1, where 2 s windows do better (77.1 / 75.0). Frames after averaging the probabilities over 1 s.
+Default model 10 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.3% of frames right, macro 70.9 (88.2 / 77.3 allowing +-0.5 s at step changes), 23 of 25 incomplete washes caught; on METC validation (14 people never seen in training) 69.5 / 66.0, where 2 s windows do better (77.1 / 75.0). Frames after averaging the probabilities over 1 s.
 
 ## Data
 
@@ -70,10 +70,11 @@ Run from `ActionClassifier/handwash/`:
 ```bash
 python extract.py --mode engine                       # landmarks of all METC videos with the hands engine -> cache/kpt-engine-0.5/ (--mode video|image: MediaPipe CPU)
 python stats.py cache/kpt-engine-0.5                    # 0/1/2 hands per step
-python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --rate 16 --seconds 1 --anchor center --name tcn-r16-s1-center   # -> weight/<name>/model.pt, model.onnx, metrics.json
-python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r16-s1-center] [--window model|native]   # step per frame and a summary; engines built on first use
+python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --rate 10 --seconds 1 --anchor center --name tcn-r10-s1-center   # -> weight/<name>/model.pt, model.onnx, metrics.json
+python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r10-s1-center] [--landmarks] [--window model|native]   # step per frame and a summary; engines built on first use
 python fps_test.py                                       # the frame-rate / window table below (PSKUS DataSet7 in data/handwash/pskus)
-python eval.py weight/tcn-r16-s1-center weight/tcn-r10-s2  # whole videos, strict and +-0.5 s, METC val and PSKUS
+python eval.py weight/tcn-r10-s1-center weight/tcn-r10-s2  # whole videos: frames strict and +-0.5 s, missing steps per video; METC val and PSKUS
+python extract.py --mode engine --fps 20                 # METC re-encoded to 20 fps first; train with --kpt cache/kpt-engine-0.5-20fps --src-fps 20
 ```
 
 `run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~6 ms per frame with OpenCV decoding, which dominates), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
@@ -115,8 +116,38 @@ Most errors sit at step changes (10 fps x 2 s, label at the window's end): on PS
 | 10 fps x 1 s, middle | 69.5 / 66.0 | 74.7 / 71.7 | 85.3 / 70.9 | 88.2 / 77.3 |
 
 - A label at the window's end is about half a window late; at the middle (`--anchor center`, needs half a window of future: fine offline, a 0.5 s delay live) it lines up with the step.
-- 1 s windows fit staff who switch steps every 2.6 s (one or two rubs per second, the user's reasoning); METC volunteers hold a step for 6.8 s and prefer 2 s. The two sets pull in opposite directions; the hospital footage is the one that looks like deployment, so `run.py` defaults to `weight/tcn-r16-s1-center`.
+- 1 s windows fit staff who switch steps every 2.6 s (one or two rubs per second, the user's reasoning); METC volunteers hold a step for 6.8 s and prefer 2 s. The two sets pull in opposite directions; the hospital footage is the one that looks like deployment, so `run.py` defaults to a 1 s window labelled at its middle (now at 10 fps, see below).
 - 20-25 fps cannot be trained from METC (16 fps); PSKUS (30 fps) would allow it.
+
+## 20 fps, interpolation, whole videos
+
+`eval.py`, same sets, accuracy / macro (strict | +-0.5 s). 20 fps training data is METC re-encoded with ffmpeg (`extract.py --fps 20`: one frame in four repeated, no new motion); `--interp` fills a hand missing up to that many seconds by straight lines between where it was last and next seen (offline; its presence flag stays 0):
+
+| Model | METC val | PSKUS |
+|---|---|---|
+| 10 fps x 2 s, end | 77.1 / 75.0 \| 81.3 / 79.6 | 78.5 / 61.0 \| 82.6 / 70.3 |
+| **10 fps x 1 s, middle** | 69.5 / 66.0 \| 74.7 / 71.7 | **85.3 / 70.9 \| 88.2 / 77.3** |
+| 10 fps x 1 s, middle, interp 0.5 s | 69.2 / 65.2 \| 74.4 / 70.9 | 85.2 / 70.9 \| 88.1 / 77.3 |
+| 10 fps x 1 s, middle, interp 3 s | 68.2 / 65.2 \| 73.3 / 70.7 | 83.0 / 66.8 \| 86.1 / 73.9 |
+| 10 fps x 1 s, middle, interp 10 s | 67.2 / 63.9 \| 72.1 / 69.1 | 82.0 / 64.7 \| 85.3 / 72.1 |
+| 20 fps x 2 s, end | 76.3 / 74.1 \| 80.4 / 78.6 | 78.5 / 60.5 \| 82.7 / 70.3 |
+| 20 fps x 2 s, middle | 71.6 / 68.0 \| 76.3 / 73.1 | 83.0 / 65.2 \| 86.7 / 73.4 |
+| 20 fps x 1 s, middle | 69.3 / 65.4 \| 74.6 / 71.2 | 84.1 / 66.4 \| 87.1 / 74.0 |
+| 20 fps x 1 s, middle, interp 3 s | 67.8 / 64.1 \| 72.8 / 69.7 | 83.2 / 67.1 \| 86.2 / 74.2 |
+
+- 20 fps does not beat 10 fps (with repeated frames, so not a fair test of real 20 fps footage). The TCN sees 17 frames per output position: 1.7 s at 10 fps, 0.85 s at 20 fps.
+- Interpolation does not help: short gaps change nothing, long ones (3-10 s) cost 2-6 macro points; a straight line drawn across seconds is motion that did not happen. Copying the other hand stays.
+
+What matters in use is whether a wash missed a step. Per video, a step is done when it has >= 1 s in the labels and reported done when it has >= 1 s predicted (10 fps x 1 s, middle):
+
+| | METC val (42 videos) | PSKUS (30 videos) |
+|---|---|---|
+| missing steps caught | 20 / 31 | 74 / 90 |
+| done steps reported missing (false alarms) | 10 / 221 | 12 / 90 |
+| incomplete washes caught | 9 / 11 | 23 / 25 |
+| complete washes reported incomplete | 2 / 31 | 2 / 5 |
+
+Requiring 2 s of a step before calling it done catches more missing steps (22 / 31, 83 / 90) for about twice the false alarms; `eval.py` prints 0.5, 1 and 2 s for every model. Only 5 of the 30 PSKUS videos are complete washes, so the last line there is thin.
 
 ## Limits
 

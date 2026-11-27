@@ -42,9 +42,9 @@ for v in vids:
         _, _, x, pr, fps, H, W, _ = landmarks(v if f == 30 else p)
         ref = lab[np.minimum(np.round(np.arange(len(x)) * 30 / f).astype(int), len(lab) - 1)]
         for m in models:
-            rate, sec, anc = model_window(m)
+            rate, sec, anc, ip = model_window(m)
             for mode, r in (("model", rate), ("native", fps)):
-                _, sm = classify(clfs[m], x, pr, fps, H, W, r, sec, 1.0, anc)
+                _, sm = classify(clfs[m], x, pr, fps, H, W, r, sec, 1.0, anc, ip)
                 pred.setdefault((f, m, mode), []).append((ref, sm.argmax(1).cpu().numpy()))
     print(v.stem, flush=True)
 
@@ -57,7 +57,7 @@ def score(rows):
 print(f"\n{len(vids)} PSKUS videos, accuracy / macro, windows resampled to the model's rate | every video frame (native)")
 print("model".ljust(16) + "".join(f"{f} fps".ljust(30) for f in a.fps))
 for m in models:
-    rate, sec, _ = model_window(m)
+    rate, sec, _, _ = model_window(m)
     cells = []
     for f in a.fps:
         s1, s2 = score(pred[(f, m, "model")]), score(pred[(f, m, "native")])

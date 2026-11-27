@@ -39,6 +39,19 @@ def load(kpt):
     return seqs
 
 
+def interpolate(lm, present, gap):
+    """Offline: a hand missing for at most `gap` frames, seen in the same slot before and after, gets its landmarks
+    linearly interpolated (its presence flag stays 0, so the model still knows)."""
+    lm = lm.copy()
+    for k in range(2):
+        seen = np.where(present[:, k] > 0)[0]
+        for a, b in zip(seen[:-1], seen[1:]):
+            if 1 < b - a <= gap + 1:
+                w = (np.arange(a + 1, b) - a)[:, None, None] / (b - a)
+                lm[a + 1:b, k] = lm[a, k] * (1 - w) + lm[b, k] * w
+    return lm
+
+
 def windows(seqs, frames, stride, dev):
     """Concatenated sequences on the GPU plus the start index of every window."""
     lm = torch.from_numpy(np.concatenate([s[1] for s in seqs])).to(dev)
@@ -54,17 +67,18 @@ def windows(seqs, frames, stride, dev):
 
 
 def fill(x, p, mode):
-    """x [B,T,2,21,3], p [B,T,2] -> x with missing hands filled."""
-    x = x * p[..., None, None]
+    """x [B,T,2,21,3], p [B,T,2] -> x with empty slots filled. A slot is empty when it is all zeros: a slot interpolated offline
+    (train.interpolate) keeps its landmarks although its presence flag is 0."""
+    h = (x.abs().sum((-1, -2)) > 0).float()  # slots holding landmarks
     if mode == "zero":
         return x
-    other = x.flip(2) * (p.flip(2) * (1 - p))[..., None, None]
+    other = x.flip(2) * (h.flip(2) * (1 - h))[..., None, None]
     if mode == "hold":
-        t = torch.arange(x.shape[1], device=x.device)[None, :, None] * p.long() - (1 - p.long())  # -1 where missing
+        t = torch.arange(x.shape[1], device=x.device)[None, :, None] * h.long() - (1 - h.long())  # -1 where empty
         last = t.cummax(1).values
         held = torch.gather(x, 1, last.clamp(min=0)[..., None, None].expand_as(x))
         seen = (last >= 0).float()
-        miss = (1 - p) * seen
+        miss = (1 - h) * seen
         x = x + held * miss[..., None, None]
         other = other * (1 - seen)[..., None, None]
     return x + other
@@ -146,7 +160,8 @@ def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0, at=-1):
         tt = torch.arange(frames, device=st.device)
         span = ((tt >= a) & (tt < e)).float() * (torch.rand(b, 1, device=st.device) < drop).float()
         hand = F.one_hot(torch.randint(0, 2, (b,), device=st.device), 2).float()
-        p = p * (1 - span[..., None] * hand[:, None])
+        keep = 1 - span[..., None] * hand[:, None]
+        p, x = p * keep, x * keep[..., None, None]
     return features(fill(x, p, mode), p), lab[t[:, at]]
 
 
@@ -174,7 +189,9 @@ if __name__ == "__main__":
     ap.add_argument("--seconds", type=float, default=2, help="window length")
     ap.add_argument("--anchor", default="end", choices=["end", "center"],
                     help="which frame of the window its label comes from: end (live, ~seconds/2 late) or center (offline, needs seconds/2 of future)")
-    ap.add_argument("--rate", type=int, default=16, help="frames per second inside the window, at most 16 (METC's rate; resampled to the nearest frame)")
+    ap.add_argument("--rate", type=int, default=16, help="frames per second inside the window, at most --src-fps (resampled to the nearest frame)")
+    ap.add_argument("--interp", type=float, default=0, help="seconds: interpolate a hand missing at most this long (offline), 0 = off")
+    ap.add_argument("--src-fps", type=int, default=16, help="frame rate of the landmarks in --kpt (METC 16; extract.py --fps re-encodes)")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name")
@@ -183,10 +200,11 @@ if __name__ == "__main__":
     dev = "cuda"
     a.frames = round(a.rate * a.seconds)
     at = a.frames // 2 if a.anchor == "center" else -1
-    # resample METC's 16 fps to --rate (nearest frame), every phase of it: 8 fps -> frames 0,2,4.. and 1,3,5..; 10 fps -> 0,2,3,5,6.. and 1,2,4,..
-    P = max(1, round(16 / a.rate))
-    take = lambda n, o: np.unique(np.minimum(np.round((np.arange(int(n * a.rate / 16)) + o / P) * 16 / a.rate), n - 1).astype(int))
-    seqs = [(i, lm[k], p[k], l[k]) for i, lm, p, l in load(a.kpt) for o in range(P) for k in [take(len(l), o)]]
+    # resample --src-fps (METC: 16) to --rate (nearest frame), every phase of it: 8 fps -> frames 0,2,4.. and 1,3,5..; 10 fps -> 0,2,3,5,6.. and 1,2,4,..
+    P = max(1, round(a.src_fps / a.rate))
+    take = lambda n, o: np.unique(np.minimum(np.round((np.arange(int(n * a.rate / a.src_fps)) + o / P) * a.src_fps / a.rate), n - 1).astype(int))
+    raw = [(i, interpolate(lm, p, round(a.interp * a.src_fps)) if a.interp else lm, p, l) for i, lm, p, l in load(a.kpt)]
+    seqs = [(i, lm[k], p[k], l[k]) for i, lm, p, l in raw for o in range(P) for k in [take(len(l), o)]]
     val = [s for s in seqs if s[0] % 5 == 0]
     tr = windows([s for s in seqs if s[0] % 5], a.frames, 2, dev)
     va = windows(val, a.frames, 4, dev)

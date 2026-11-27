@@ -19,7 +19,7 @@ import torch
 
 from extract import Slots
 from hands import Engine, compile_engine, export, runtime
-from train import STEPS
+from train import STEPS, interpolate
 
 FPS = 16  # the rate the classifier was trained at (METC)
 EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9), (9, 10), (10, 11), (11, 12), (9, 13), (13, 14), (14, 15),
@@ -96,10 +96,12 @@ def landmarks(video):
     return lm, pr, x, p, fps, H, W, ms
 
 
-def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end"):
+def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end", interp=0):
     """One window per frame: `seconds` of frames 1/rate s apart ending at that frame (frames before the start repeat the first one)
     -> class probabilities [F,7] and the labels after averaging them over `smooth` seconds."""
     n = len(x)
+    if interp:
+        x = interpolate(x, p, round(interp * fps))
     k = round(seconds * rate)
     t = np.arange(n)[:, None] / fps - (np.arange(k)[::-1] / rate)[None]
     if anchor == "center":  # frame i is the middle of its window (frames after the end repeat the last one)
@@ -114,16 +116,17 @@ def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end"):
 
 
 def model_window(folder):
-    """(rate, seconds, anchor) the model was trained with."""
+    """(rate, seconds, anchor, interp) the model was trained with."""
     m = json.load(open(Path(folder) / "metrics.json"))
-    return m.get("rate", FPS), m.get("seconds", m.get("frames", 32) / FPS), m.get("anchor", "end")
+    return m.get("rate", FPS), m.get("seconds", m.get("frames", 32) / FPS), m.get("anchor", "end"), m.get("interp", 0)
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
-    ap.add_argument("--out", help="video with landmarks and step (H264)")
-    ap.add_argument("--model", default="weight/tcn-r16-s1-center", help="folder of a train.py run (16 fps x 1 s labelled at its middle: best on hospital footage)")
+    ap.add_argument("--out", help="video with the step in the corner (and the true step with --labels), H264")
+    ap.add_argument("--landmarks", action="store_true", help="also draw the hand landmarks in --out")
+    ap.add_argument("--model", default="weight/tcn-r10-s1-center", help="folder of a train.py run (10 fps x 1 s labelled at its middle: best on hospital footage)")
     ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
     ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
     ap.add_argument("--window", default="model", choices=["model", "native"],
@@ -133,9 +136,9 @@ if __name__ == "__main__":
     clf = Classifier(a.model)
     lm, pr, x, p, fps, H, W, ms = landmarks(a.video)
     n = len(x)
-    rate, seconds, anchor = model_window(a.model)
+    rate, seconds, anchor, interp = model_window(a.model)
     t1 = time.time()
-    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth, anchor)
+    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth, anchor, interp)
     lab = smooth.argmax(1).cpu().numpy()
     t2 = time.time()
     print(f"{n} frames ({n / fps:.1f} s at {fps:.0f} fps): hands {ms:.2f} ms/frame incl. decode, "
@@ -154,15 +157,20 @@ if __name__ == "__main__":
         cap = cv2.VideoCapture(a.video)
         ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{W}x{H}", "-r", str(fps), "-i", "-",
                                "-c:v", "libx264", "-pix_fmt", "yuv420p", a.out], stdin=subprocess.PIPE)
-        conf = smooth.max(1).values.cpu().numpy()
+        s = H / 480  # text scale
+        txt = lambda f, t, y, c: [cv2.putText(f, t, (int(10 * s), int(y * s)), 0, 1.2 * s, col, th, cv2.LINE_AA) for col, th in (((0, 0, 0), max(2, int(6 * s))), (c, max(1, int(2 * s))))]
         for i in range(n):
             ok, f = cap.read()
-            for h in range(2):
-                if pr[i, h] > 0:
-                    q = (lm[i, h, :, :2] * [W, H]).astype(int)
-                    for u, v in EDGES:
-                        cv2.line(f, tuple(q[u]), tuple(q[v]), (0, 255, 0) if h == 0 else (255, 0, 255), 2)
-            cv2.putText(f, f"{lab[i]} {STEPS[lab[i]]} {conf[i]:.2f}", (10, 30), 0, 0.8, (0, 0, 255), 2)
+            if a.landmarks:
+                for h in range(2):
+                    if pr[i, h] > 0:
+                        q = (lm[i, h, :, :2] * [W, H]).astype(int)
+                        for u, v in EDGES:
+                            cv2.line(f, tuple(q[u]), tuple(q[v]), (0, 255, 0) if h == 0 else (255, 0, 255), 2)
+            name = lambda k: "other" if k == 0 else f"step {k}"
+            txt(f, name(lab[i]), 40, (255, 255, 255))
+            if a.labels and i < len(ref):
+                txt(f, "true: " + name(ref[i]), 80, (80, 220, 80) if ref[i] == lab[i] else (60, 60, 255))
             ff.stdin.write(f.tobytes())
         ff.stdin.close()
         ff.wait()

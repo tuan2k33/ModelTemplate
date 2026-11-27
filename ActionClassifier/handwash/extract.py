@@ -6,10 +6,11 @@ One cache/kpt-<mode>-<conf>/<video>.npz per video:
   present [F,2] uint8          hand found in that slot
   label   [F] int8             WHO movement code (0 = other, 1-6 the steps, 7 faucet)
 
-python extract.py [--mode video|image|engine] [--conf 0.5] [--limit N] [--workers 6]
+python extract.py [--mode video|image|engine] [--fps 20] [--conf 0.5] [--limit N] [--workers 6]
 """
 import argparse
 import json
+import subprocess
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -95,8 +96,16 @@ class Slots:
         return x, p
 
 
-def extract(v, ann, conf, mode, out):
+def extract(v, ann, conf, mode, out, fps=None):
     label = np.int8([l["code"] for l in json.load(open(ann))["labels"]])
+    if fps:  # re-encode to another frame rate (ffmpeg repeats or drops frames), labels taken from the nearest original frame
+        src = Path(f"cache/metc-{fps}fps/{v.name}")
+        if not src.exists():
+            src.parent.mkdir(parents=True, exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(v), "-vf", f"fps={fps}", "-c:v", "libx264", "-crf", "18", str(src)], check=True)
+        n = int(cv2.VideoCapture(str(src)).get(cv2.CAP_PROP_FRAME_COUNT))
+        label = label[np.minimum(np.round(np.arange(n) * cv2.VideoCapture(str(v)).get(cv2.CAP_PROP_FPS) / fps).astype(int), len(label) - 1)]
+        v = src
     lm, present, slots = [], [], Slots()
     for hands in (engine_hands(v) if mode == "engine" else mediapipe_hands(v, conf, mode)):
         x, p = slots(hands)
@@ -113,15 +122,16 @@ if __name__ == "__main__":
     ap.add_argument("--mode", default="video", choices=["video", "image", "engine"])
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=6)
+    ap.add_argument("--fps", type=int, help="re-encode the videos to this frame rate first (cache/metc-<fps>fps/)")
     a = ap.parse_args()
     if not Path(TASK).exists():
         Path(TASK).parent.mkdir(parents=True, exist_ok=True)
         import urllib.request
         urllib.request.urlretrieve(URL, TASK)
     vs = videos()[:a.limit]
-    dst = Path(f"cache/kpt-{a.mode}-{a.conf}")
+    dst = Path(f"cache/kpt-{a.mode}-{a.conf}" + (f"-{a.fps}fps" if a.fps else ""))
     dst.mkdir(parents=True, exist_ok=True)
-    todo = [(v, an, a.conf, a.mode, dst / f"{v.stem}.npz") for v, an in vs if not (dst / f"{v.stem}.npz").exists()]
+    todo = [(v, an, a.conf, a.mode, dst / f"{v.stem}.npz", a.fps) for v, an in vs if not (dst / f"{v.stem}.npz").exists()]
     print(f"{len(vs)} videos, {len(todo)} to do -> {dst}")
     with ProcessPoolExecutor(a.workers) as ex:
         for name, n in ex.map(extract, *zip(*todo)) if todo else []:
