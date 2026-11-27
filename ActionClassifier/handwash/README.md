@@ -10,7 +10,7 @@ video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tr
          normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
 ```
 
-On METC validation (14 people never seen in training), default model 16 fps x 1 s labelled at its middle: 85.9% of frames / macro 71.9 on another hospital's videos (PSKUS, 30 fps), 88.7 / 78.5 allowing +-0.5 s at step changes; 8 fps x 2 s gives 73.2% of frames right, 76.6% (macro 74.5) after averaging the probabilities over 1 s. on METC, but only 79.9 / 62.4 on PSKUS.
+Default model 16 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.9% of frames right, macro 71.9 (88.7 / 78.5 allowing +-0.5 s at step changes); on METC validation (14 people never seen in training) 68.8 / 65.1, where 2 s windows do better (77.1 / 75.0). Frames after averaging the probabilities over 1 s.
 
 ## Data
 
