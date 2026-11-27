@@ -1,6 +1,6 @@
 """Models on whole videos through run.py's pipeline: METC validation (42 videos, 16 fps) and 30 PSKUS DataSet7 videos (30 fps,
-another hospital). Frames after the 1 s vote; "strict" compares with the frame's own label, "+-0.5 s" counts a prediction right
-when it matches any label within half a second (a step change is not a sharp line: two annotators also differ there).
+another hospital). Frames after the 1 s vote; a prediction counts as right when it matches any label within 0.5 s / 1 s (a step change
+is not a sharp line: two annotators also differ there).
 Macro = mean over the 7 classes.
 
 python eval.py weight/tcn-r10-s2 weight/tcn-r10-s2-center ...
@@ -76,10 +76,15 @@ if __name__ == "__main__":
     for m, rows in raw.items():  # per-frame logits (before voting) for post-processing: post.py
         Path("cache/probs").mkdir(parents=True, exist_ok=True)
         np.save(f"cache/probs/{Path(m).name}.npy", np.array(rows, dtype=object), allow_pickle=True)
-    print("\naccuracy / macro, strict | +-0.5 s")
+    print("\naccuracy / macro, a frame counts as right when the prediction matches a label within +-0.5 s | +-1 s (step changes are not frame-exact)")
     print("model".ljust(28) + "METC val".ljust(32) + "PSKUS 30 fps")
     for m in models:
-        cells = ["{:.1f} / {:.1f} | {:.1f} / {:.1f}".format(*scores(res[(n, m)], None)).ljust(32) for n in ("METC val", "PSKUS")]
+        cells = []
+        for n in ("METC val", "PSKUS"):
+            s = []
+            for TOL in (0.5, 1.0):
+                s.append("{2:.1f} / {3:.1f}".format(*scores(res[(n, m)], None)))
+            cells.append(" | ".join(s).ljust(32))
         print(Path(m).name.ljust(28) + "".join(cells))
     print("\nwhole videos: a step is done with >= 1 s of it in the labels, reported done with >= `pred` s of it predicted")
     for n in ("METC val", "PSKUS"):
