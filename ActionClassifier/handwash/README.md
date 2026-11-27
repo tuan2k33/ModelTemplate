@@ -23,8 +23,8 @@ Hand recall = hands found / 2 (both hands are always in the sink), 12 videos:
 | MediaPipe VIDEO mode, conf 0.5 | 51-58% | 3/88/9 |
 | MediaPipe VIDEO, conf 0.3 / 0.7 | 49% / 45% | |
 | MediaPipe IMAGE mode, conf 0.3 | 49% | |
-| YOLOv8n hand detector (Bingsu/adetailer), boxes only | 52% | 5/83/12 |
-| YOLO26s hand pose ([marceloeatworld/yolo26-training](https://github.com/marceloeatworld/yolo26-training)), conf 0.1 | 33% | 33/56/10 |
+
+Tried and dropped: a YOLOv8n hand detector (Bingsu/adetailer, 52%, boxes only) and a YOLO26s hand pose trained on the Ultralytics hand-keypoints set (marceloeatworld/yolo26-training, 33% at conf 0.1: it misses clear hands and boxes forearms at the frame edge; that set has few views from above).
 
 All 211 videos with MediaPipe VIDEO 0.5: 0/1/2 hands per step 1-6: 15/71/14, 9/82/9, 16/69/15, 20/58/22, 18/57/25, 9/47/44. Landmarks of the hands found look right, also on top of each other; the misses are mostly visible hands that are blurred by motion or enter from the frame edge.
 
@@ -54,7 +54,7 @@ Validation, 30 epochs, window label = label of its last frame:
 Run from `ActionClassifier/handwash/`:
 
 ```bash
-python extract.py [--mode video|image|yolo] [--conf 0.5]   # landmarks -> cache/kpt-<mode>-<conf>/, CPU, ~20 frames/s per worker
+python extract.py [--mode video|image] [--conf 0.5]   # landmarks -> cache/kpt-<mode>-<conf>/, CPU, ~20 frames/s per worker
 python stats.py cache/kpt-video-0.5                         # 0/1/2 hands per step
 python train.py --head tcn --fill copy [--rot 180] [--drop 0.3] [--name run]   # -> weight/<name>/
 ```

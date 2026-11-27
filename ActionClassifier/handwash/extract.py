@@ -1,11 +1,11 @@
-"""Hand landmarks of the METC hand-washing videos: MediaPipe HandLandmarker (CPU) or YOLO26 hand pose (GPU).
+"""Hand landmarks of the METC hand-washing videos with MediaPipe HandLandmarker (CPU).
 
 One cache/kpt-<mode>-<conf>/<video>.npz per video:
-  lm      [F,2,21,3] float32  x, y in [0,1] of the frame, z relative depth (yolo: keypoint confidence); 2 slots kept apart by wrist position
+  lm      [F,2,21,3] float32  x, y in [0,1] of the frame, z relative depth; 2 slots kept apart by wrist position
   present [F,2] uint8          hand found in that slot
   label   [F] int8             WHO movement code (0 = other, 1-6 the steps, 7 faucet)
 
-python extract.py [--mode video|image|yolo] [--conf 0.5] [--limit N] [--workers 6]
+python extract.py [--mode video|image] [--conf 0.5] [--limit N] [--workers 6]
 """
 import argparse
 import json
@@ -17,7 +17,6 @@ import numpy as np
 
 DATA = Path("data/handwash/metc")
 TASK = "cache/hand_landmarker.task"
-YOLO_HAND = "cache/yolo26_hand_pose.pt"  # https://github.com/marceloeatworld/yolo26-training (Git LFS)
 URL = "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task"
 
 
@@ -53,20 +52,12 @@ def mediapipe_hands(v, conf, mode):
             i += 1
 
 
-def yolo_hands(v, conf):
-    """YOLO26s hand pose (marceloeatworld/yolo26-training) on the GPU; third channel is the keypoint confidence."""
-    from ultralytics import YOLO
-    for r in YOLO(YOLO_HAND).predict(str(v), stream=True, conf=conf, half=True, verbose=False, device=0):
-        k = r.keypoints
-        yield [np.concatenate([xy, c[:, None]], 1) for xy, c in zip(k.xyn.cpu().numpy()[:2], k.conf.cpu().numpy()[:2])]
-
-
 def extract(v, ann, conf, mode, out):
     label = np.int8([l["code"] for l in json.load(open(ann))["labels"]])
     lm, present = [], []
     wrist = np.float32([[0.3, 0.5], [0.7, 0.5]])  # last wrist seen per slot
-    for hands in (yolo_hands(v, conf) if mode == "yolo" else mediapipe_hands(v, conf, mode)):
-        # left/right from the models flips when seen from above, so slots follow the wrists instead
+    for hands in mediapipe_hands(v, conf, mode):
+        # MediaPipe's left/right flips when seen from above, so slots follow the wrists instead
         d = np.float32([[np.linalg.norm(h[0, :2] - w) for w in wrist] for h in hands])
         if len(hands) == 1:
             slots = [int(d[0].argmin())]
@@ -88,7 +79,7 @@ def extract(v, ann, conf, mode, out):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--conf", type=float, default=0.5)
-    ap.add_argument("--mode", default="video", choices=["video", "image", "yolo"])
+    ap.add_argument("--mode", default="video", choices=["video", "image"])
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=6)
     a = ap.parse_args()
