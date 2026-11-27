@@ -12,7 +12,7 @@ One subfolder per task:
 
 | Folder | Task | Keypoints | Status |
 |---|---|---|---|
-| [handwash](handwash/README.md) | WHO hand-washing movement (routine / antiseptic), camera above the sink | MediaPipe Hands as one TensorRT engine, 2 x 21 | 75% of frames on unseen people; hands 1.08 ms/frame |
+| [handwash](handwash/README.md) | WHO hand-washing movement (routine / antiseptic), camera above the sink | MediaPipe Hands as one TensorRT engine, 2 x 21 | 77% of frames on unseen people; hands 1.08 ms/frame |
 
 Planned: a person sitting still for a long time (possible stroke), a fall.
 

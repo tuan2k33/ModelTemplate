@@ -2,7 +2,7 @@
 
 video -> hands engine (hands.py, one frame per call: tracking needs the previous frame; results stay on the GPU)
       -> landmarks of the whole video [F,2,21,3] -> slots by wrist (extract.Slots, as in training)
-      -> one 2 s window per frame (32 frames at 16 fps, resampled from the video's fps) -> TCN engine in batches
+      -> one window per frame (the seconds and frames per second the model was trained with, resampled from the video; --window native: every frame) -> TCN engine in batches
       -> step per frame, smoothed over --smooth seconds; summary of the steps; optional video with landmarks and step (H264)
 
 python run.py video.mp4 [--out out.mp4] [--model weight/tcn] [--labels annotation.json]
@@ -29,12 +29,12 @@ EDGES = [(0, 1), (1, 2), (2, 3), (3, 4), (0, 5), (5, 6), (6, 7), (7, 8), (5, 9),
 class Classifier:
     """TCN engine: landmarks [B,T,2,21,3], present [B,T,2] (cuda) -> logits [B,7]. Built from model.onnx on first use."""
 
-    def __init__(self, folder, frames=32, maxb=512):
+    def __init__(self, folder, maxb=512, tmax=160):
         p = Path(folder) / "model.engine"
         if not p.exists():
-            s = lambda b: f"landmarks:{b}x{frames}x2x21x3,present:{b}x{frames}x2"
-            r = subprocess.run(["trtexec", f"--onnx={p.with_suffix('.onnx')}", f"--saveEngine={p}", f"--minShapes={s(1)}", f"--optShapes={s(maxb)}",
-                                f"--maxShapes={s(maxb)}"], capture_output=True, text=True)
+            s = lambda b, t: f"landmarks:{b}x{t}x2x21x3,present:{b}x{t}x2"
+            r = subprocess.run(["trtexec", f"--onnx={p.with_suffix('.onnx')}", f"--saveEngine={p}", f"--minShapes={s(1, 8)}", f"--optShapes={s(maxb, 2 * FPS)}",
+                                f"--maxShapes={s(maxb, tmax)}"], capture_output=True, text=True)
             assert r.returncode == 0, "\n".join(l for l in (r.stdout + r.stderr).splitlines() if "[E]" in l)
         e = runtime().deserialize_cuda_engine(p.read_bytes())
         self.ctx, self.maxb = e.create_execution_context(), maxb
@@ -74,20 +74,12 @@ def segments(lab, fps):
     return out
 
 
-if __name__ == "__main__":
-    ap = argparse.ArgumentParser()
-    ap.add_argument("video")
-    ap.add_argument("--out", help="video with landmarks and step (H264)")
-    ap.add_argument("--model", default="weight/tcn")
-    ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
-    ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
-    a = ap.parse_args()
-    torch.cuda.set_stream(torch.cuda.Stream())  # TensorRT warns about (and syncs on) the default stream
-
-    cap = cv2.VideoCapture(a.video)
+def landmarks(video):
+    """Whole video through the hands engine -> engine landmarks, presence, slot-ordered x [F,2,21,3], p [F,2], fps, H, W, ms per frame."""
+    cap = cv2.VideoCapture(str(video))
     fps = cap.get(cv2.CAP_PROP_FPS) or FPS
     H, W = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    hands, clf = hands_engine(H, W), Classifier(a.model)
+    hands = hands_engine(H, W)
     t0 = time.time()
     lms, prs = [], []
     while True:
@@ -98,22 +90,52 @@ if __name__ == "__main__":
         lms.append(lm.clone())
         prs.append(pr.clone())
     lm, pr = torch.stack(lms).cpu().numpy(), torch.stack(prs).cpu().numpy()
-    t1 = time.time()
+    ms = (time.time() - t0) * 1000 / len(lm)
     slots = Slots()
     x, p = map(np.stack, zip(*(slots([lm[i, k] for k in range(2) if pr[i, k] > 0]) for i in range(len(lm)))))
+    return lm, pr, x, p, fps, H, W, ms
+
+
+def classify(clf, x, p, fps, H, W, rate, seconds, smooth):
+    """One window per frame: `seconds` of frames 1/rate s apart ending at that frame (frames before the start repeat the first one)
+    -> class probabilities [F,7] and the labels after averaging them over `smooth` seconds."""
     n = len(x)
-    # window of frame i: 32 frames 1/16 s apart ending at i (frames before the start repeat the first one)
-    t = np.arange(n)[:, None] / fps - (np.arange(FPS * 2)[::-1] / FPS)[None]
+    t = np.arange(n)[:, None] / fps - (np.arange(round(seconds * rate))[::-1] / rate)[None]
     idx = torch.from_numpy(np.clip(np.round(t * fps), 0, n - 1).astype(np.int64)).cuda()
     x, p = torch.from_numpy(x).cuda(), torch.from_numpy(p).float().cuda()
     x[..., 0] *= W / H  # square pixels, as in training
     prob = torch.softmax(clf(x[idx], p[idx]), 1)
-    k = max(1, round(a.smooth * fps))
-    smooth = torch.nn.functional.avg_pool1d(prob.T[None], k, 1, k // 2, count_include_pad=False)[0, :, :n].T
+    k = max(1, round(smooth * fps))
+    sm = torch.nn.functional.avg_pool1d(prob.T[None], k, 1, k // 2, count_include_pad=False)[0, :, :n].T
+    return prob, sm
+
+
+def model_window(folder):
+    """(rate, seconds) the model was trained with."""
+    m = json.load(open(Path(folder) / "metrics.json"))
+    return m.get("rate", FPS), m.get("seconds", m.get("frames", 32) / FPS)
+
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("video")
+    ap.add_argument("--out", help="video with landmarks and step (H264)")
+    ap.add_argument("--model", default="weight/tcn-r8-s2", help="folder of a train.py run (8 fps x 2 s: best across datasets and frame rates)")
+    ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
+    ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
+    ap.add_argument("--window", default="model", choices=["model", "native"],
+                    help="model: frames at the rate the model was trained at (resampled from the video); native: every frame of the video")
+    a = ap.parse_args()
+    torch.cuda.set_stream(torch.cuda.Stream())  # TensorRT warns about (and syncs on) the default stream
+    clf = Classifier(a.model)
+    lm, pr, x, p, fps, H, W, ms = landmarks(a.video)
+    n = len(x)
+    rate, seconds = model_window(a.model)
+    t1 = time.time()
+    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth)
     lab = smooth.argmax(1).cpu().numpy()
-    torch.cuda.synchronize()
     t2 = time.time()
-    print(f"{n} frames ({n / fps:.1f} s at {fps:.0f} fps): hands {(t1 - t0) * 1000 / n:.2f} ms/frame incl. decode, "
+    print(f"{n} frames ({n / fps:.1f} s at {fps:.0f} fps): hands {ms:.2f} ms/frame incl. decode, "
           f"windows + classifier {(t2 - t1) * 1000:.0f} ms for all {n}")
     for s, b, e in segments(lab, fps):
         if e - b >= 0.5:

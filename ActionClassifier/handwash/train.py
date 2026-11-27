@@ -1,11 +1,12 @@
 """Hand-washing step from a window of hand landmarks (cache of extract.py).
 
+Window: --seconds at --rate frames per second (subsampled from METC's 16 fps).
 Each frame: 2 hands x 21 landmarks x (x, y, z) + 2 presence flags. A missing hand is filled (--fill):
   zero  zeros
   copy  the other hand when it is there (hands on top of each other), else zeros
   hold  the last place it was seen in the window, else as copy
 The presence flags always go in, so the model knows what was filled. Training drops a hand on a random
-span with --drop probability and fills it the same way. Window: --frames at 16 fps, label of its last frame,
+span with --drop probability and fills it the same way. Label of the window: its last frame;
 randomly rotated and mirrored (--rot),
 normalized by the window's mean wrist and hand size; frame-to-frame differences are appended.
 Validation: the subjects with id % 5 == 0 (each subject washed at all three sinks).
@@ -121,12 +122,12 @@ class Window(nn.Module):
 
 
 def export(model, mode, frames, path):
-    """model.onnx, any batch (one row per window). FP32: 330k parameters, 0.27 ms for 64 windows; the FP16 conversion trips
+    """model.onnx, any batch (one row per window) and window length (trained at `frames`). FP32: 330k parameters, 0.27 ms for 64 windows; the FP16 conversion trips
     TensorRT on mixed types in the filling/normalization and is not worth it."""
     w = Window(model, mode).eval().cpu()
     torch.onnx.export(w, (torch.zeros(1, frames, 2, 21, 3), torch.ones(1, frames, 2)), str(path), dynamo=False, opset_version=17,
                       input_names=["landmarks", "present"], output_names=["logits", "label"],
-                      dynamic_axes={"landmarks": {0: "B"}, "present": {0: "B"}, "logits": {0: "B"}, "label": {0: "B"}})
+                      dynamic_axes={"landmarks": {0: "B", 1: "T"}, "present": {0: "B", 1: "T"}, "logits": {0: "B"}, "label": {0: "B"}})
 
 
 def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0):
@@ -170,14 +171,17 @@ if __name__ == "__main__":
     ap.add_argument("--fill", default="copy", choices=["zero", "copy", "hold"])
     ap.add_argument("--drop", type=float, default=0.3)
     ap.add_argument("--rot", type=float, default=180, help="random rotation range in degrees when training, 0 = off")
-    ap.add_argument("--frames", type=int, default=32)
+    ap.add_argument("--seconds", type=float, default=2, help="window length")
+    ap.add_argument("--rate", type=int, default=16, choices=[16, 8, 4], help="frames per second inside the window (METC is 16 fps: 8 takes every 2nd frame)")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--name")
     a = ap.parse_args()
     torch.manual_seed(a.seed)
     dev = "cuda"
-    seqs = load(a.kpt)
+    a.frames = round(a.rate * a.seconds)
+    step = 16 // a.rate
+    seqs = [(i, lm[o::step], p[o::step], l[o::step]) for i, lm, p, l in load(a.kpt) for o in range(step)]  # every phase of the subsampling
     val = [s for s in seqs if s[0] % 5 == 0]
     tr = windows([s for s in seqs if s[0] % 5], a.frames, 2, dev)
     va = windows(val, a.frames, 4, dev)
