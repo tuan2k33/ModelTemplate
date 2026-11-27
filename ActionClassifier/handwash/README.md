@@ -164,6 +164,17 @@ Requiring 2 s of a step before calling it done catches more missing steps (22 / 
 
 "Other" is not only at the ends: 10-16% of the frames between the first and last step, and PSKUS staff spend a median 31 s after the last step (rinsing, drying, the tap). Replacing "other" by a step raises the macro but reports steps that were not done, so fewer incomplete washes are caught: keep the plain vote to judge a wash, use the in-wash rule only to draw a cleaner timeline.
 
+## Compliant or not
+
+`compliance.py`: a video is compliant when all six steps have >= 1 s in the labels; it is reported compliant when all six get >= 1 s of predicted frames (most frequent label within 1 s). Positive = non-compliant (the alert). 10 fps x 1 s, middle:
+
+| Set | Videos (non-compliant) | Accuracy | Non-compliant caught (recall) | Alerts right (precision) | Compliant passed |
+|---|---|---|---|---|---|
+| METC val | 42 (11) | 90.5% | 9 / 11 | 9 / 11 | 29 / 31 |
+| PSKUS DataSet7, all annotated | 208 (183) | 88.9% | 176 / 183 (96%) | 176 / 192 (92%) | **9 / 25** |
+
+Only 12% of the PSKUS washes are compliant, so always raising the alert would already score 88.0% there: the number that matters is the compliant washes passed, 9 of 25. In the 16 false alarms the step reported missing is step 3 in 8 (palm to palm with fingers interlaced, predicted as step 1), step 5 in 4, step 6 in 3 (twice under 1.3 s in the labels), step 4 in 2, step 2 in 1. A 0.5 s threshold passes 12 / 25 and still catches 173 / 183.
+
 ## Limits
 
 - Only routine / antiseptic hand washing (one model). Surgical scrub needs its own data: no public RGB set with step labels was found (MIVIA's surgical hand-washing set is depth only).
