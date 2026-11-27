@@ -9,6 +9,7 @@ Templates for turning pretrained and pre-quantized vision models into **single T
 | [FaceID](FaceID/README.md) | ArcFace ResNet100 face verification, ONNX Model Zoo INT8 converted to Q/DQ, LFW / CFP-FP / AgeDB-30 | INT8 |
 | [Motion](Motion/README.md) | Background model for fixed cameras as a stateful engine, optionally fused with the detector for several cameras per call | FP32 state |
 | [OCR](OCR/README.md) | Work in progress: YOLO26 text-line detector, page deskew, and [dewarp](OCR/dewarp/README.md) (phone photo of a curved page to a flat A4, CPU) | FP16 |
+| [ActionClassifier](ActionClassifier/README.md) | Small classifiers on 2 s of keypoints; first task: WHO hand-washing steps from MediaPipe hand landmarks, MediaPipe Hands rebuilt as one TensorRT engine (1 ms/frame) | FP16 + FP32 |
 | [peoplenet](peoplenet/README.md) | NVIDIA PeopleNet detector: NGC calibration cache turned into explicit Q/DQ for TensorRT 11 | INT8 |
 
 ## Models on Hugging Face
@@ -17,7 +18,7 @@ The INT8 Q/DQ ONNX models are in [tuannw/ModelTemplate](https://huggingface.co/t
 
 ## Setup
 
-Needs an NVIDIA GPU, CUDA 13, Python 3.14, PyTorch with CUDA, TensorRT 11 (Python package and `trtexec` on `PATH`), `onnx`, `onnxruntime`, `cuda-python`, `torchvision`, `opencv-python`, `huggingface_hub`, and per project `ultralytics` (Detector, OCR, Motion) or `h5py` (OCR/dewarp benchmark). Datasets and Model Zoo weights are downloaded on first use with `curl`. The Hugging Face repo is public, no token needed to download. Every script runs from inside its own folder and writes to its `data/`, `cache/` and `weight/` (git-ignored).
+Needs an NVIDIA GPU, CUDA 13, Python 3.14, PyTorch with CUDA, TensorRT 11 (Python package and `trtexec` on `PATH`), `onnx`, `onnxruntime`, `cuda-python`, `torchvision`, `opencv-python`, `huggingface_hub`, and per project `ultralytics` (Detector, OCR, Motion), `h5py` (OCR/dewarp benchmark), `mediapipe` and `onnxconverter_common` (ActionClassifier; tf2onnx runs once through `uv run`). Datasets and Model Zoo weights are downloaded on first use with `curl`. The Hugging Face repo is public, no token needed to download. Every script runs from inside its own folder and writes to its `data/`, `cache/` and `weight/` (git-ignored).
 
 Measurements in the READMEs come from an RTX 3050 Ti Laptop (4 GB) with TensorRT 11.4 or 11.5 (stated where it matters). Engines are tied to the GPU and TensorRT version that built them.
 

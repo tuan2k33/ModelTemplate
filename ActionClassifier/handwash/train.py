@@ -10,7 +10,8 @@ randomly rotated and mirrored (--rot),
 normalized by the window's mean wrist and hand size; frame-to-frame differences are appended.
 Validation: the subjects with id % 5 == 0 (each subject washed at all three sinks).
 
-python train.py [--kpt cache/kpt-video-0.5] [--head mlp|tcn] [--fill zero|copy|hold] [--drop 0.3] [--rot 180]
+python train.py [--kpt cache/kpt-video-0.5] [--head mlp|tcn] [--fill zero|copy|hold] [--drop 0.3] [--rot 180] [--name run]
+-> weight/<name>/model.pt, model.onnx (see Window), metrics.json
 """
 import argparse
 import json
@@ -106,6 +107,28 @@ class TCN(nn.Module):
         return self.net(f.transpose(1, 2))
 
 
+class Window(nn.Module):
+    """What the engine runs: landmarks [B,T,2,21,3] (x in units of the frame height, i.e. x * W / H) and present [B,T,2]
+    -> logits [B,7], label [B] int32. The filling, normalization and differences are inside."""
+
+    def __init__(self, model, mode):
+        super().__init__()
+        self.model, self.mode = model, mode
+
+    def forward(self, landmarks, present):
+        logits = self.model(features(fill(landmarks, present, self.mode), present))
+        return logits, logits.argmax(1).int()
+
+
+def export(model, mode, frames, path):
+    """model.onnx, any batch (one row per window). FP32: 330k parameters, 0.27 ms for 64 windows; the FP16 conversion trips
+    TensorRT on mixed types in the filling/normalization and is not worth it."""
+    w = Window(model, mode).eval().cpu()
+    torch.onnx.export(w, (torch.zeros(1, frames, 2, 21, 3), torch.ones(1, frames, 2)), str(path), dynamo=False, opset_version=17,
+                      input_names=["landmarks", "present"], output_names=["logits", "label"],
+                      dynamic_axes={"landmarks": {0: "B"}, "present": {0: "B"}, "logits": {0: "B"}, "label": {0: "B"}})
+
+
 def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0):
     t = st[idx][:, None] + torch.arange(frames, device=st.device)
     x, p = lm[t], pr[t]
@@ -182,4 +205,5 @@ if __name__ == "__main__":
         out = Path("weight") / a.name
         out.mkdir(parents=True, exist_ok=True)
         torch.save(model.state_dict(), out / "model.pt")
+        export(model, a.fill, a.frames, out / "model.onnx")
         json.dump(dict(vars(a), acc=acc, macro=macro, per_class=dict(zip(STEPS, per))), open(out / "metrics.json", "w"), indent=1)

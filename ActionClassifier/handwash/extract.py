@@ -1,11 +1,12 @@
-"""Hand landmarks of the METC hand-washing videos with MediaPipe HandLandmarker (CPU).
+"""Hand landmarks of the METC hand-washing videos with MediaPipe HandLandmarker (CPU),
+or the same networks as one TensorRT engine (--mode engine, hands.py, thresholds fixed at 0.5).
 
 One cache/kpt-<mode>-<conf>/<video>.npz per video:
   lm      [F,2,21,3] float32  x, y in [0,1] of the frame, z relative depth; 2 slots kept apart by wrist position
   present [F,2] uint8          hand found in that slot
   label   [F] int8             WHO movement code (0 = other, 1-6 the steps, 7 faucet)
 
-python extract.py [--mode video|image] [--conf 0.5] [--limit N] [--workers 6]
+python extract.py [--mode video|image|engine] [--conf 0.5] [--limit N] [--workers 6]
 """
 import argparse
 import json
@@ -52,13 +53,35 @@ def mediapipe_hands(v, conf, mode):
             i += 1
 
 
-def extract(v, ann, conf, mode, out):
-    label = np.int8([l["code"] for l in json.load(open(ann))["labels"]])
-    lm, present = [], []
-    wrist = np.float32([[0.3, 0.5], [0.7, 0.5]])  # last wrist seen per slot
-    for hands in mediapipe_hands(v, conf, mode):
-        # MediaPipe's left/right flips when seen from above, so slots follow the wrists instead
-        d = np.float32([[np.linalg.norm(h[0, :2] - w) for w in wrist] for h in hands])
+def engine_hands(v):
+    """hands.py engine (MediaPipe's networks + its glue as one TensorRT graph) on the GPU."""
+    import torch
+    from hands import Engine, compile_engine, export
+    cap = cv2.VideoCapture(str(v))
+    H, W = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)), int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    p = Path(f"cache/mp/hands_{H}x{W}.engine")
+    if not p.exists():
+        export(p.with_suffix(".onnx"), H, W)
+        compile_engine(p.with_suffix(".onnx"), p)
+    e = Engine(p)
+    while True:
+        ok, f = cap.read()
+        if not ok:
+            break
+        lm, present = e(torch.from_numpy(cv2.cvtColor(f, cv2.COLOR_BGR2RGB)).cuda())
+        lm, present = lm.cpu().numpy(), present.cpu().numpy()
+        yield [lm[k] for k in range(2) if present[k] > 0]
+
+
+class Slots:
+    """Hands of one frame -> lm [2,21,3], present [2]. MediaPipe's left/right flips when seen from above,
+    so the two slots follow the wrists instead (each hand goes to the slot whose last wrist is closer)."""
+
+    def __init__(self):
+        self.wrist = np.float32([[0.3, 0.5], [0.7, 0.5]])
+
+    def __call__(self, hands):
+        d = np.float32([[np.linalg.norm(h[0, :2] - w) for w in self.wrist] for h in hands])
         if len(hands) == 1:
             slots = [int(d[0].argmin())]
         elif len(hands) == 2:
@@ -68,7 +91,15 @@ def extract(v, ann, conf, mode, out):
         x = np.zeros((2, 21, 3), np.float32)
         p = np.zeros(2, np.uint8)
         for k, h in zip(slots, hands):
-            x[k], p[k], wrist[k] = h, 1, h[0, :2]
+            x[k], p[k], self.wrist[k] = h, 1, h[0, :2]
+        return x, p
+
+
+def extract(v, ann, conf, mode, out):
+    label = np.int8([l["code"] for l in json.load(open(ann))["labels"]])
+    lm, present, slots = [], [], Slots()
+    for hands in (engine_hands(v) if mode == "engine" else mediapipe_hands(v, conf, mode)):
+        x, p = slots(hands)
         lm.append(x)
         present.append(p)
     n = min(len(lm), len(label))
@@ -79,7 +110,7 @@ def extract(v, ann, conf, mode, out):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--conf", type=float, default=0.5)
-    ap.add_argument("--mode", default="video", choices=["video", "image"])
+    ap.add_argument("--mode", default="video", choices=["video", "image", "engine"])
     ap.add_argument("--limit", type=int)
     ap.add_argument("--workers", type=int, default=6)
     a = ap.parse_args()

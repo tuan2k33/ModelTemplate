@@ -3,3 +3,4 @@ weight/
 __pycache__/
 data
 log/
+out/

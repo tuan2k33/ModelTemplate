@@ -1,14 +1,16 @@
 # Hand washing steps
 
-Which WHO hand-washing movement (soap and water) is being done, from 2 s of hand landmarks. Work in progress: landmarks from MediaPipe Hands on the CPU, classifier trained, no engine yet.
+Which WHO hand-washing movement (routine / antiseptic washing with water) is being done, from 2 s of hand landmarks. Two TensorRT engines:
 
 ```
-video 16 fps -> MediaPipe HandLandmarker (VIDEO mode): up to 2 hands x 21 landmarks per frame
-             -> 2 slots kept apart by wrist position (MediaPipe's left/right flips when seen from above)
-             -> missing hand filled with a copy of the other one, presence flag 0
-             -> 32 frames (2 s), normalized by mean wrist and hand size, + frame differences
-             -> TCN -> 7 classes: other + WHO movements 1-6
+video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tracking state in, 2 hands x 21 landmarks out, 1.08 ms/frame
+      -> 2 slots kept apart by wrist position (MediaPipe's left/right flips when seen from above)
+      -> one window per frame: 32 frames (2 s at 16 fps)
+      -> classifier engine (train.Window): missing hand filled with a copy of the other one (presence flag kept),
+         normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
 ```
+
+On METC validation (14 people never seen in training): 71.8% of frames right, 75.0% after averaging the probabilities over 1 s.
 
 ## Data
 
@@ -28,11 +30,23 @@ Tried and dropped: a YOLOv8n hand detector (Bingsu/adetailer, 52%, boxes only) a
 
 All 211 videos with MediaPipe VIDEO 0.5: 0/1/2 hands per step 1-6: 15/71/14, 9/82/9, 16/69/15, 20/58/22, 18/57/25, 9/47/44. Landmarks of the hands found look right, also on top of each other; the misses are mostly visible hands that are blurred by motion or enter from the frame edge.
 
-On the GPU: the two networks of `hand_landmarker.task` convert to ONNX (tf2onnx) and build in TensorRT 11; FP16 (onnxconverter_common, float32 I/O) 0.59 ms palm detector + 0.33 ms per hand landmarks on an RTX 3050 Ti Laptop, landmarks within 0.06 px of FP32. The steps between them (anchor decoding, NMS, rotated hand crop, tracking from the previous frame) are not written yet.
+## Hands engine
+
+`hands.py` rebuilds MediaPipe's HandLandmarker (VIDEO mode, 2 hands) as one ONNX graph: the two networks of `hand_landmarker.task` (converted with tf2onnx, FP16 weights) and the steps between them in torch, exported and spliced in (as Motion does):
+
+- letterbox to 192x192 with `GridSample`, palm detector, 2016 anchors decoded with Mul/Add;
+- NMS without an NMS op, fixed shapes: ArgMax, palms overlapping it (IoU > 0.3) averaged by score (MediaPipe's weighted NMS) and removed, ArgMax again;
+- per slot, the hand tracked from the previous frame (`state`) or a new palm (palms overlapping a tracked hand dropped), palm rect x2.6 shifted 0.5 up;
+- rotated 224x224 crop with `GridSample` (edge pixels repeated: closer to MediaPipe than zeros, median landmark error 1.5-3.4 px vs 2-5 px), landmark model at batch 2;
+- landmarks back to the frame, next rect from 12 landmarks (x2.0, shifted 0.1 up) -> `state_out`.
+
+RTX 3050 Ti Laptop, TensorRT 11.5: 1.08 ms per frame for everything (palm detector alone 0.59 ms FP16 / 0.78 FP32, landmarks 0.33 / 0.53 ms per hand). Against MediaPipe on the CPU (~50 ms/frame): hand recall 48% vs 51% on 12 videos, step-2 frames with 0/1/2 hands 4/88/8 vs 3/89/8; the differences are mostly palms right at the 0.5 threshold, after which the two trackers follow different hands. The classifier trained on the engine's landmarks scores the same as on MediaPipe's (70.6 / 71.3 vs 70.7 / 70.2, two seeds). `check_hands.py` compares the same graph run eagerly (onnxruntime) with the CPU landmarks.
+
+Two TensorRT details: it does not transpose uint8 (cast first), and ArgMax needs a 2-d input. The classifier engine stays FP32 (330k parameters, 0.27 ms for 64 windows); converting it to FP16 left mixed types in the normalization that TensorRT rejects.
 
 ## Results
 
-Validation, 30 epochs, window label = label of its last frame:
+Classifier, validation windows (every 4th frame), 30 epochs, label of the window's last frame, MediaPipe CPU landmarks:
 
 | Head | Fill | Rotation (train) | Hand drop | Acc | Macro | Params |
 |---|---|---|---|---|---|---|
@@ -54,7 +68,16 @@ Validation, 30 epochs, window label = label of its last frame:
 Run from `ActionClassifier/handwash/`:
 
 ```bash
-python extract.py [--mode video|image] [--conf 0.5]   # landmarks -> cache/kpt-<mode>-<conf>/, CPU, ~20 frames/s per worker
-python stats.py cache/kpt-video-0.5                         # 0/1/2 hands per step
-python train.py --head tcn --fill copy [--rot 180] [--drop 0.3] [--name run]   # -> weight/<name>/
+python extract.py --mode engine                       # landmarks of all METC videos with the hands engine -> cache/kpt-engine-0.5/ (--mode video|image: MediaPipe CPU)
+python stats.py cache/kpt-engine-0.5                    # 0/1/2 hands per step
+python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --name tcn   # -> weight/tcn/model.pt, model.onnx, metrics.json
+python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json]   # step per frame and a summary; engines built on first use
 ```
+
+`run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~6 ms per frame with OpenCV decoding, which dominates), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
+
+## Limits
+
+- Only routine / antiseptic hand washing (one model). Surgical scrub needs its own data: no public RGB set with step labels was found (MIVIA's surgical hand-washing set is depth only).
+- The hands engine is built for one frame size and one camera per call; the classifier engine takes any batch of windows.
+- Landmarks find only about half the hands (motion blur, hands entering from the frame edge, hands on top of each other).
