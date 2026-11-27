@@ -10,7 +10,7 @@ video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tr
          normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
 ```
 
-Default model 10 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.3% of frames right, macro 70.9 (88.2 / 77.3 allowing +-0.5 s at step changes), 23 of 25 incomplete washes caught; on METC validation (14 people never seen in training) 69.5 / 66.0, where 2 s windows do better (77.1 / 75.0). Frames after averaging the probabilities over 1 s.
+Default model 10 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.3% of frames right, macro 70.9 (88.2 / 77.3 allowing +-0.5 s at step changes), 23 of 25 incomplete washes caught; on METC validation (14 people never seen in training) 69.5 / 66.0, where 2 s windows do better (77.1 / 75.0). Frames after a 1 s vote (argmax per frame, most frequent label around it).
 
 ## Data
 
@@ -151,16 +151,18 @@ Requiring 2 s of a step before calling it done catches more missing steps (22 / 
 
 ## Post-processing
 
-`eval.py` saves the per-frame probabilities (cache/probs/<model>.npy, `run.py --csv` writes the same for one video) and `post.py` tries rules on them. 10 fps x 1 s, middle, PSKUS:
+`eval.py` saves the per-frame logits (cache/probs/<model>.npy; `run.py --csv` writes them for one video) and `post.py` tries rules on them (softmax only there). 10 fps x 1 s, middle, PSKUS:
 
-| After the probabilities | strict | +-0.5 s | missing steps caught | false alarms | incomplete washes caught |
+| After the classifier | strict | +-0.5 s | missing steps caught | false alarms | incomplete washes caught |
 |---|---|---|---|---|---|
-| mean over 1 s (run.py) | 85.3 / 70.9 | 88.2 / 77.3 | 74 / 90 | 12 / 90 | 23 / 25 |
+| most frequent label within 1 s (run.py) | 85.4 / 70.8 | 88.2 / 77.2 | 73 / 90 | 12 / 90 | 23 / 25 |
+| mean of the softmax over 1 s (earlier) | 85.3 / 70.9 | 88.2 / 77.3 | 74 / 90 | 12 / 90 | 23 / 25 |
+| argmax per frame, no vote | 79.4 / 65.8 | 81.9 / 71.3 | 62 / 90 | 8 / 90 | 20 / 25 |
 | "other" only in the first and last 5 s | 39.1 / 68.7 | 41.9 / 73.1 | 33 / 90 | 5 / 90 | 14 / 25 |
 | inside the wash (first to last 1 s of steps), next best step when P(other) <= 0.5 | 81.1 / 74.4 | 83.9 / 80.2 | 66 / 90 | 10 / 90 | 22 / 25 |
 | HMM, step order from METC training labels | 75.0 / 74.6 | 77.8 / 79.6 | 50 / 90 | 10 / 90 | 19 / 25 |
 
-"Other" is not only at the ends: 10-16% of the frames between the first and last step, and PSKUS staff spend a median 31 s after the last step (rinsing, drying, the tap). Replacing "other" by a step raises the macro but reports steps that were not done, so fewer incomplete washes are caught: keep the plain mean to judge a wash, use the in-wash rule only to draw a cleaner timeline.
+"Other" is not only at the ends: 10-16% of the frames between the first and last step, and PSKUS staff spend a median 31 s after the last step (rinsing, drying, the tap). Replacing "other" by a step raises the macro but reports steps that were not done, so fewer incomplete washes are caught: keep the plain vote to judge a wash, use the in-wash rule only to draw a cleaner timeline.
 
 ## Limits
 

@@ -1,6 +1,6 @@
 """Classifiers at other frame rates: PSKUS videos (30 fps, another hospital, 320x240) re-encoded to 25 and 10 fps with ffmpeg.
 Hands engine once per video and rate; every model then runs on the same landmarks with its windows resampled to the rate it
-was trained at ("model") or on every frame of the video ("native"). Accuracy and macro (mean over the steps) after 1 s smoothing.
+was trained at ("model") or on every frame of the video ("native"). Accuracy and macro (mean over the steps) after the 1 s vote.
 
 python fps_test.py [--videos 30] [--models weight/tcn-r*]   # PSKUS DataSet7 in data/handwash/pskus (zenodo 4537209), videos in out/fps/
 """
@@ -44,8 +44,8 @@ for v in vids:
         for m in models:
             rate, sec, anc, ip = model_window(m)
             for mode, r in (("model", rate), ("native", fps)):
-                _, sm = classify(clfs[m], x, pr, fps, H, W, r, sec, 1.0, anc, ip)
-                pred.setdefault((f, m, mode), []).append((ref, sm.argmax(1).cpu().numpy()))
+                _, lab = classify(clfs[m], x, pr, fps, H, W, r, sec, 1.0, anc, ip)
+                pred.setdefault((f, m, mode), []).append((ref, lab))
     print(v.stem, flush=True)
 
 

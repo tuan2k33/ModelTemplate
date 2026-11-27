@@ -1,6 +1,8 @@
-"""Post-processing of the per-frame class probabilities that eval.py saves (cache/probs/<model>.npy), no model run needed.
+"""Post-processing of the per-frame logits that eval.py saves (cache/probs/<model>.npy), no model run needed.
+Probabilities below = softmax of the logits (only here, for the comparison).
 
-  avg       mean of the probabilities over 1 s, argmax (what run.py does)
+  vote      argmax per frame, most frequent label within 1 s (what run.py does)
+  avg       mean of the probabilities over 1 s, argmax
   edge5     avg, but "other" only allowed in the first and last 5 s
   span-T    avg; the wash runs from the first to the last second-long stretch of steps; inside it, "other" only when its
             probability is above T (else the best step)
@@ -93,8 +95,12 @@ def hmm(prob, fps, dur, trans, prior):
 
 if __name__ == "__main__":
     rows = np.load(f"cache/probs/{sys.argv[1]}.npy", allow_pickle=True)
+    for r in rows:
+        if "logit" in r:
+            e = np.exp(r["logit"] - r["logit"].max(1, keepdims=True))
+            r["prob"] = e / e.sum(1, keepdims=True)
     trans, prior = transitions()
-    methods = {"avg": lambda r: avg(r["prob"], r["fps"]).argmax(1), "edge5": lambda r: edge5(r["prob"], r["fps"])}
+    methods = {"vote": lambda r: avg(np.eye(STEPS)[r["prob"].argmax(1)], r["fps"]).argmax(1), "avg": lambda r: avg(r["prob"], r["fps"]).argmax(1), "edge5": lambda r: edge5(r["prob"], r["fps"])}
     for t in (0.5, 0.7, 0.9, 1.0):
         methods[f"span-{t}"] = lambda r, t=t: span(r["prob"], r["fps"], t)
     for d in (1, 2, 4):

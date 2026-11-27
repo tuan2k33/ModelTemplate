@@ -1,5 +1,5 @@
 """Models on whole videos through run.py's pipeline: METC validation (42 videos, 16 fps) and 30 PSKUS DataSet7 videos (30 fps,
-another hospital). Frames after 1 s smoothing; "strict" compares with the frame's own label, "+-0.5 s" counts a prediction right
+another hospital). Frames after the 1 s vote; "strict" compares with the frame's own label, "+-0.5 s" counts a prediction right
 when it matches any label within half a second (a step change is not a sharp line: two annotators also differ there).
 Macro = mean over the 7 classes.
 
@@ -69,11 +69,11 @@ if __name__ == "__main__":
             ref = ref[:len(x)]
             for m in models:
                 rate, sec, anchor, interp = model_window(m)
-                prob, sm = classify(clfs[m], x, p, fps, H, W, rate, sec, 1.0, anchor, interp)
-                res.setdefault((name, m), []).append((ref, sm.argmax(1).cpu().numpy()[:len(ref)], fps))
-                raw.setdefault(m, []).append(dict(set=name, video=v.stem, fps=fps, ref=ref, prob=prob.cpu().numpy()[:len(ref)]))
+                logit, lab = classify(clfs[m], x, p, fps, H, W, rate, sec, 1.0, anchor, interp)
+                res.setdefault((name, m), []).append((ref, lab[:len(ref)], fps))
+                raw.setdefault(m, []).append(dict(set=name, video=v.stem, fps=fps, ref=ref, logit=logit.cpu().numpy()[:len(ref)]))
         print(name, "done", flush=True)
-    for m, rows in raw.items():  # per-frame probabilities (no smoothing) for post-processing: post.py
+    for m, rows in raw.items():  # per-frame logits (before voting) for post-processing: post.py
         Path("cache/probs").mkdir(parents=True, exist_ok=True)
         np.save(f"cache/probs/{Path(m).name}.npy", np.array(rows, dtype=object), allow_pickle=True)
     print("\naccuracy / macro, strict | +-0.5 s")

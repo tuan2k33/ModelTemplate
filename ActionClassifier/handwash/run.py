@@ -3,7 +3,7 @@
 video -> hands engine (hands.py, one frame per call: tracking needs the previous frame; results stay on the GPU)
       -> landmarks of the whole video [F,2,21,3] -> slots by wrist (extract.Slots, as in training)
       -> one window per frame (the seconds and frames per second the model was trained with, resampled from the video; --window native: every frame) -> TCN engine in batches
-      -> step per frame, smoothed over --smooth seconds; summary of the steps; optional video with landmarks and step (H264)
+      -> argmax per frame, most frequent within --smooth seconds; confidence = sigmoid(logit); summary of the steps; optional video with landmarks and step (H264)
 
 python run.py video.mp4 [--out out.mp4] [--model weight/tcn] [--labels annotation.json]
 """
@@ -98,7 +98,7 @@ def landmarks(video):
 
 def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end", interp=0):
     """One window per frame: `seconds` of frames 1/rate s apart ending at that frame (frames before the start repeat the first one)
-    -> class probabilities [F,7] and the labels after averaging them over `smooth` seconds."""
+    -> logits [F,7] (cuda) and labels [F]: the classifier's argmax, then the most frequent one within `smooth` seconds (centred)."""
     n = len(x)
     if interp:
         x = interpolate(x, p, round(interp * fps))
@@ -109,10 +109,11 @@ def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end", interp=0
     idx = torch.from_numpy(np.clip(np.round(t * fps), 0, n - 1).astype(np.int64)).cuda()
     x, p = torch.from_numpy(x).cuda(), torch.from_numpy(p).float().cuda()
     x[..., 0] *= W / H  # square pixels, as in training
-    prob = torch.softmax(clf(x[idx], p[idx]), 1)
+    logit = clf(x[idx], p[idx])
     k = max(1, round(smooth * fps))
-    sm = torch.nn.functional.avg_pool1d(prob.T[None], k, 1, k // 2, count_include_pad=False)[0, :, :n].T
-    return prob, sm
+    votes = torch.nn.functional.one_hot(logit.argmax(1), len(STEPS)).float()
+    share = torch.nn.functional.avg_pool1d(votes.T[None], k, 1, k // 2, count_include_pad=False)[0, :, :n].T  # share of each label around the frame
+    return logit, share.argmax(1).cpu().numpy()
 
 
 def model_window(folder):
@@ -126,9 +127,9 @@ if __name__ == "__main__":
     ap.add_argument("video")
     ap.add_argument("--out", help="video with the step in the corner (and the true step with --labels), H264")
     ap.add_argument("--landmarks", action="store_true", help="also draw the hand landmarks in --out")
-    ap.add_argument("--csv", help="per frame: time, probabilities of the 7 classes (before smoothing), smoothed label (for post.py-style post-processing)")
+    ap.add_argument("--csv", help="per frame: time, the 7 logits (before voting), voted label")
     ap.add_argument("--model", default="weight/tcn-r10-s1-center", help="folder of a train.py run (10 fps x 1 s labelled at its middle: best on hospital footage)")
-    ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
+    ap.add_argument("--smooth", type=float, default=1.0, help="seconds over which the most frequent label wins (centred)")
     ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
     ap.add_argument("--window", default="model", choices=["model", "native"],
                     help="model: frames at the rate the model was trained at (resampled from the video); native: every frame of the video")
@@ -139,8 +140,8 @@ if __name__ == "__main__":
     n = len(x)
     rate, seconds, anchor, interp = model_window(a.model)
     t1 = time.time()
-    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth, anchor, interp)
-    lab = smooth.argmax(1).cpu().numpy()
+    logit, lab = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth, anchor, interp)
+    conf = torch.sigmoid(logit[torch.arange(n), torch.from_numpy(lab).cuda()]).cpu().numpy()  # confidence of the shown step
     t2 = time.time()
     print(f"{n} frames ({n / fps:.1f} s at {fps:.0f} fps): hands {ms:.2f} ms/frame incl. decode, "
           f"windows + classifier {(t2 - t1) * 1000:.0f} ms for all {n}")
@@ -150,13 +151,12 @@ if __name__ == "__main__":
     done = {STEPS[s]: round(float((lab == s).sum()) / fps, 1) for s in range(1, len(STEPS))}
     print("seconds per step:", done)
     if a.csv:
-        P = prob.cpu().numpy()
-        np.savetxt(a.csv, np.column_stack([np.arange(n), np.arange(n) / fps, P, lab]), delimiter=",", fmt=["%d", "%.3f"] + ["%.4f"] * len(STEPS) + ["%d"],
-                   header="frame,time," + ",".join(f"p{k}" for k in range(len(STEPS))) + ",label", comments="")
+        np.savetxt(a.csv, np.column_stack([np.arange(n), np.arange(n) / fps, logit.cpu().numpy(), lab]), delimiter=",",
+                   fmt=["%d", "%.3f"] + ["%.3f"] * len(STEPS) + ["%d"], header="frame,time," + ",".join(f"logit{k}" for k in range(len(STEPS))) + ",label", comments="")
     if a.labels:
         ref = np.int64([l["code"] for l in json.load(open(a.labels))["labels"]])[:n]
         ref[ref >= len(STEPS)] = 0
-        raw = prob.argmax(1).cpu().numpy()[:len(ref)]
+        raw = logit.argmax(1).cpu().numpy()[:len(ref)]
         print(f"frame accuracy: raw {(raw == ref).mean() * 100:.1f}%, smoothed {(lab[:len(ref)] == ref).mean() * 100:.1f}%")
     if a.out:
         cap = cv2.VideoCapture(a.video)
@@ -173,7 +173,7 @@ if __name__ == "__main__":
                         for u, v in EDGES:
                             cv2.line(f, tuple(q[u]), tuple(q[v]), (0, 255, 0) if h == 0 else (255, 0, 255), 2)
             name = lambda k: "other" if k == 0 else f"step {k}"
-            txt(f, name(lab[i]), 40, (255, 255, 255))
+            txt(f, f"{name(lab[i])} {conf[i]:.2f}", 40, (255, 255, 255))
             if a.labels and i < len(ref):
                 txt(f, "true: " + name(ref[i]), 80, (80, 220, 80) if ref[i] == lab[i] else (60, 60, 255))
             ff.stdin.write(f.tobytes())
