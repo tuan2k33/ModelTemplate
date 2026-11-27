@@ -6,7 +6,7 @@ Each frame: 2 hands x 21 landmarks x (x, y, z) + 2 presence flags. A missing han
   copy  the other hand when it is there (hands on top of each other), else zeros
   hold  the last place it was seen in the window, else as copy
 The presence flags always go in, so the model knows what was filled. Training drops a hand on a random
-span with --drop probability and fills it the same way. Label of the window: its last frame;
+span with --drop probability and fills it the same way. Label of the window: its last or middle frame (--anchor);
 randomly rotated and mirrored (--rot),
 normalized by the window's mean wrist and hand size; frame-to-frame differences are appended.
 Validation: the subjects with id % 5 == 0 (each subject washed at all three sinks).
@@ -130,7 +130,7 @@ def export(model, mode, frames, path):
                       dynamic_axes={"landmarks": {0: "B", 1: "T"}, "present": {0: "B", 1: "T"}, "logits": {0: "B"}, "label": {0: "B"}})
 
 
-def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0):
+def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0, at=-1):
     t = st[idx][:, None] + torch.arange(frames, device=st.device)
     x, p = lm[t], pr[t]
     if rot:  # camera turned or mirrored: random rotation of the whole window, flip half of them
@@ -147,16 +147,16 @@ def batch(lm, pr, lab, st, idx, frames, mode, drop=0.0, rot=0.0):
         span = ((tt >= a) & (tt < e)).float() * (torch.rand(b, 1, device=st.device) < drop).float()
         hand = F.one_hot(torch.randint(0, 2, (b,), device=st.device), 2).float()
         p = p * (1 - span[..., None] * hand[:, None])
-    return features(fill(x, p, mode), p), lab[t[:, -1]]
+    return features(fill(x, p, mode), p), lab[t[:, at]]
 
 
-def evaluate(model, data, frames, mode):
+def evaluate(model, data, frames, mode, at=-1):
     lm, pr, lab, st = data
     model.eval()
     pred, y = [], []
     with torch.no_grad():
         for i in torch.arange(len(st), device=st.device).split(4096):
-            f, l = batch(lm, pr, lab, st, i, frames, mode)
+            f, l = batch(lm, pr, lab, st, i, frames, mode, at=at)
             pred.append(model(f).argmax(1))
             y.append(l)
     pred, y = torch.cat(pred), torch.cat(y)
@@ -172,6 +172,8 @@ if __name__ == "__main__":
     ap.add_argument("--drop", type=float, default=0.3)
     ap.add_argument("--rot", type=float, default=180, help="random rotation range in degrees when training, 0 = off")
     ap.add_argument("--seconds", type=float, default=2, help="window length")
+    ap.add_argument("--anchor", default="end", choices=["end", "center"],
+                    help="which frame of the window its label comes from: end (live, ~seconds/2 late) or center (offline, needs seconds/2 of future)")
     ap.add_argument("--rate", type=int, default=16, help="frames per second inside the window, at most 16 (METC's rate; resampled to the nearest frame)")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--seed", type=int, default=0)
@@ -180,6 +182,7 @@ if __name__ == "__main__":
     torch.manual_seed(a.seed)
     dev = "cuda"
     a.frames = round(a.rate * a.seconds)
+    at = a.frames // 2 if a.anchor == "center" else -1
     # resample METC's 16 fps to --rate (nearest frame), every phase of it: 8 fps -> frames 0,2,4.. and 1,3,5..; 10 fps -> 0,2,3,5,6.. and 1,2,4,..
     P = max(1, round(16 / a.rate))
     take = lambda n, o: np.unique(np.minimum(np.round((np.arange(int(n * a.rate / 16)) + o / P) * 16 / a.rate), n - 1).astype(int))
@@ -197,14 +200,14 @@ if __name__ == "__main__":
     for ep in range(a.epochs):
         model.train()
         for idx in torch.randperm(len(tr[3]), device=dev)[:steps // a.epochs * 256].split(256):
-            f, y = batch(*tr, idx, a.frames, a.fill, a.drop, a.rot)
+            f, y = batch(*tr, idx, a.frames, a.fill, a.drop, a.rot, at)
             loss = F.cross_entropy(model(f), y, label_smoothing=0.1)
             opt.zero_grad()
             loss.backward()
             opt.step()
             sched.step()
         if ep % 5 == 4 or ep == a.epochs - 1:
-            acc, macro, per = evaluate(model, va, a.frames, a.fill)
+            acc, macro, per = evaluate(model, va, a.frames, a.fill, at)
             print(f"epoch {ep + 1}: loss {loss.item():.3f}  val acc {acc:.3f}  macro {macro:.3f}  " +
                   " ".join(f"{p:.2f}" for p in per), flush=True)
     if a.name:

@@ -96,11 +96,14 @@ def landmarks(video):
     return lm, pr, x, p, fps, H, W, ms
 
 
-def classify(clf, x, p, fps, H, W, rate, seconds, smooth):
+def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end"):
     """One window per frame: `seconds` of frames 1/rate s apart ending at that frame (frames before the start repeat the first one)
     -> class probabilities [F,7] and the labels after averaging them over `smooth` seconds."""
     n = len(x)
-    t = np.arange(n)[:, None] / fps - (np.arange(round(seconds * rate))[::-1] / rate)[None]
+    k = round(seconds * rate)
+    t = np.arange(n)[:, None] / fps - (np.arange(k)[::-1] / rate)[None]
+    if anchor == "center":  # frame i is the middle of its window (frames after the end repeat the last one)
+        t = t + (k - 1 - k // 2) / rate
     idx = torch.from_numpy(np.clip(np.round(t * fps), 0, n - 1).astype(np.int64)).cuda()
     x, p = torch.from_numpy(x).cuda(), torch.from_numpy(p).float().cuda()
     x[..., 0] *= W / H  # square pixels, as in training
@@ -111,16 +114,16 @@ def classify(clf, x, p, fps, H, W, rate, seconds, smooth):
 
 
 def model_window(folder):
-    """(rate, seconds) the model was trained with."""
+    """(rate, seconds, anchor) the model was trained with."""
     m = json.load(open(Path(folder) / "metrics.json"))
-    return m.get("rate", FPS), m.get("seconds", m.get("frames", 32) / FPS)
+    return m.get("rate", FPS), m.get("seconds", m.get("frames", 32) / FPS), m.get("anchor", "end")
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("video")
     ap.add_argument("--out", help="video with landmarks and step (H264)")
-    ap.add_argument("--model", default="weight/tcn-r10-s2", help="folder of a train.py run (10 fps x 2 s; 8 fps x 2 s is within a point)")
+    ap.add_argument("--model", default="weight/tcn-r16-s1-center", help="folder of a train.py run (16 fps x 1 s labelled at its middle: best on hospital footage)")
     ap.add_argument("--smooth", type=float, default=1.0, help="seconds of class probabilities averaged (centred)")
     ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
     ap.add_argument("--window", default="model", choices=["model", "native"],
@@ -130,9 +133,9 @@ if __name__ == "__main__":
     clf = Classifier(a.model)
     lm, pr, x, p, fps, H, W, ms = landmarks(a.video)
     n = len(x)
-    rate, seconds = model_window(a.model)
+    rate, seconds, anchor = model_window(a.model)
     t1 = time.time()
-    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth)
+    prob, smooth = classify(clf, x, p, fps, H, W, fps if a.window == "native" else rate, seconds, a.smooth, anchor)
     lab = smooth.argmax(1).cpu().numpy()
     t2 = time.time()
     print(f"{n} frames ({n / fps:.1f} s at {fps:.0f} fps): hands {ms:.2f} ms/frame incl. decode, "

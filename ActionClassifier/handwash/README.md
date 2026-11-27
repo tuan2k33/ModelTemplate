@@ -10,7 +10,7 @@ video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tr
          normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
 ```
 
-On METC validation (14 people never seen in training), default model 10 fps x 2 s; 8 fps x 2 s gives 73.2% of frames right, 76.6% (macro 74.5) after averaging the probabilities over 1 s. On another hospital's videos (PSKUS, 30 fps): 78.5% / macro 61.0.
+On METC validation (14 people never seen in training), default model 16 fps x 1 s labelled at its middle: 85.9% of frames / macro 71.9 on another hospital's videos (PSKUS, 30 fps), 88.7 / 78.5 allowing +-0.5 s at step changes; 8 fps x 2 s gives 73.2% of frames right, 76.6% (macro 74.5) after averaging the probabilities over 1 s. on METC, but only 79.9 / 62.4 on PSKUS.
 
 ## Data
 
@@ -70,9 +70,10 @@ Run from `ActionClassifier/handwash/`:
 ```bash
 python extract.py --mode engine                       # landmarks of all METC videos with the hands engine -> cache/kpt-engine-0.5/ (--mode video|image: MediaPipe CPU)
 python stats.py cache/kpt-engine-0.5                    # 0/1/2 hands per step
-python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --rate 10 --seconds 2 --name tcn-r10-s2   # -> weight/<name>/model.pt, model.onnx, metrics.json
-python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r10-s2] [--window model|native]   # step per frame and a summary; engines built on first use
+python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --rate 16 --seconds 1 --anchor center --name tcn-r16-s1-center   # -> weight/<name>/model.pt, model.onnx, metrics.json
+python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r16-s1-center] [--window model|native]   # step per frame and a summary; engines built on first use
 python fps_test.py                                       # the frame-rate / window table below (PSKUS DataSet7 in data/handwash/pskus)
+python eval.py weight/tcn-r16-s1-center weight/tcn-r10-s2  # whole videos, strict and +-0.5 s, METC val and PSKUS
 ```
 
 `run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~6 ms per frame with OpenCV decoding, which dominates), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
@@ -99,6 +100,23 @@ The window is `--seconds` long with frames `--rate` per second (8 = every 2nd ME
 - The best length follows how long a step lasts: METC volunteers hold a step for 6.8 s (median segment), so 4-5 s windows win there; PSKUS staff switch every 2.6 s, so anything above 2 s mixes steps and loses. 2 s is the safe default until there is footage from the target sinks.
 - Native windows (every frame) only work when the video's rate is close to the model's: a 16 fps model on 25-30 fps video gains a little, an 8 fps model on 25-30 fps video loses 13-17 macro points. Resampling to the model's rate is the general setting; `weight/tcn-r10-s2` (10 fps x 2 s = 20 frames) is the default of `run.py` (59-61 macro at 10-30 fps).
 - The 10 fps column also runs the hands engine on 10 fps video (tracking with 3x larger steps between frames): 1.6 macro points below 30 fps, for a third of the work.
+
+## Short windows, label at the middle
+
+Most errors sit at step changes (10 fps x 2 s, label at the window's end): on PSKUS 43% right within 1 s of a change against 90% inside a step. Two fixes, measured on whole videos with `eval.py` (1 s smoothing; "+-0.5 s" also counts a prediction that matches any label within half a second, since the two PSKUS annotators agree on 92.9% of frames and differ mostly at changes). Accuracy / macro:
+
+| Model | METC val strict | METC +-0.5 s | PSKUS strict | PSKUS +-0.5 s |
+|---|---|---|---|---|
+| 10 fps x 2 s, label at the end | 77.1 / 75.0 | 81.3 / 79.6 | 78.5 / 61.0 | 82.6 / 70.3 |
+| 10 fps x 2 s, label at the middle | 73.0 / 70.1 | 77.7 / 75.2 | 82.3 / 64.8 | 86.1 / 73.4 |
+| 16 fps x 2 s, end | 75.0 / 72.5 | 79.1 / 76.9 | 80.2 / 62.4 | 84.2 / 71.7 |
+| 16 fps x 1 s, end | 72.2 / 68.6 | 76.8 / 73.6 | 84.2 / 69.1 | 87.8 / 77.2 |
+| **16 fps x 1 s, middle** | 68.8 / 65.1 | 74.1 / 71.0 | **85.9 / 71.9** | **88.7 / 78.5** |
+| 10 fps x 1 s, middle | 69.5 / 66.0 | 74.7 / 71.7 | 85.3 / 70.9 | 88.2 / 77.3 |
+
+- A label at the window's end is about half a window late; at the middle (`--anchor center`, needs half a window of future: fine offline, a 0.5 s delay live) it lines up with the step.
+- 1 s windows fit staff who switch steps every 2.6 s (one or two rubs per second, the user's reasoning); METC volunteers hold a step for 6.8 s and prefer 2 s. The two sets pull in opposite directions; the hospital footage is the one that looks like deployment, so `run.py` defaults to `weight/tcn-r16-s1-center`.
+- 20-25 fps cannot be trained from METC (16 fps); PSKUS (30 fps) would allow it.
 
 ## Limits
 
