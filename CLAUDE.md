@@ -11,7 +11,7 @@ ModelTemplate turns pre-quantized / pretrained models into **single TensorRT eng
 - `OCR/` — work in progress: YOLO26 text-line detector fine-tuned on SROIE (`det.py`, engine built with `../Detector/train.py`) a deskew benchmark (`deskew.py`) and `dewarp/` (photo of a curved page -> flat A4 on the CPU: image-processing boundary + homography/Coons remap; optional YOLO26n-pose paper keypoints, paused; plan in its README). No recognizer yet.
 - `FaceID/` — ArcFace ResNet100 INT8 → QDQ engine, evaluated on LFW / CFP-FP / AgeDB-30 (`eval.py` only, no train).
 - `Motion/` — background model for fixed cameras as a stateful TensorRT engine (no trained weights); see its README; the module docstrings in `model.py`, `run.py`, `build.py` document inputs, state layout and options.
-- `ActionClassifier/` — small classifiers on 2 s of keypoints, one subfolder per task. `handwash/`: WHO hand-washing step from MediaPipe hand landmarks; `hands.py` rebuilds MediaPipe HandLandmarker (palm detector, fixed-shape 2-hand NMS, GridSample rotated crop, landmarks, tracking state in/out) as one TensorRT graph; `train.py` (TCN, `Window` = filling + normalization + TCN exported as the classifier engine), `run.py` (video -> both engines -> step per frame). METC data in `data/handwash/metc`.
+- `ActionClassifier/` — small classifiers on 2 s of keypoints, one subfolder per task. `handwash/`: WHO hand-washing step from MediaPipe hand landmarks; `hands.py` rebuilds MediaPipe HandLandmarker (palm detector, fixed-shape 2-hand NMS, GridSample rotated crop, landmarks, tracking state in/out) as one TensorRT graph; `train.py` (TCN, `Window` = filling + normalization + TCN exported as the classifier engine), `run.py` (video -> both engines -> step per frame + washing time, alert under 40 s), `pskus_eval.py` (whole PSKUS, the settled scoring: frames +-1 s, 40 s rule). METC data in `data/handwash/metc`, PSKUS in `data/handwash/pskus`.
 - `peoplenet/` — NGC PeopleNet INT8: `patch_qdq.py` (calibration cache -> explicit Q/DQ, result on HF), `run.py` (video demo). Only the code is in git; the NGC files (`cnn/`, `cnn_int8/`, NVIDIA license) and outputs are ignored.
 
 ## Running
@@ -29,7 +29,7 @@ cd Detector      && python quantize.py [--model X.pt --images DIR] [--silu float
 cd OCR           && python det.py --epochs 50 && python deskew.py
 cd OCR/dewarp    && python dewarp.py photo.jpg flat.jpg && python bench_uvdoc.py   # UVDoc benchmark in data/uvdoc
 cd FaceID        && python eval.py --sets lfw --pairs 600
-cd ActionClassifier/handwash && python extract.py --mode engine && python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --name tcn && python run.py video.mp4 --out out/video.mp4
+cd ActionClassifier/handwash && python extract.py --mode engine --conf 0.3 && python train.py --kpt cache/kpt-engine-0.3 --head tcn --fill copy --rate 10 --seconds 1 --anchor center --name tcn-r10-s1-center-v2 && python run.py video.mp4 --out out/video.mp4
 cd Motion        && python run.py in.mp4 out.mp4 [--detector ../Detector/weight/coco/model.onnx]   # background model; build.py makes the fused multi-camera engine
 ```
 

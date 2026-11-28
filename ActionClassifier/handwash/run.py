@@ -116,6 +116,15 @@ def classify(clf, x, p, fps, H, W, rate, seconds, smooth, anchor="end", interp=0
     return logit, share.argmax(1).cpu().numpy()
 
 
+WHO_SECONDS = 40
+
+
+def hand_span(p, fps):
+    """Seconds from the first to the last frame with a hand: the washing time, whatever the hand recall in between."""
+    i = np.where(p.sum(1) > 0)[0]
+    return (i[-1] - i[0] + 1) / fps if len(i) else 0.0
+
+
 def model_window(folder):
     """(rate, seconds, anchor, interp) the model was trained with."""
     m = json.load(open(Path(folder) / "metrics.json"))
@@ -128,7 +137,7 @@ if __name__ == "__main__":
     ap.add_argument("--out", help="video with the step in the corner (and the true step with --labels), H264")
     ap.add_argument("--landmarks", action="store_true", help="also draw the hand landmarks in --out")
     ap.add_argument("--csv", help="per frame: time, the 7 logits (before voting), voted label")
-    ap.add_argument("--model", default="weight/tcn-r10-s1-center", help="folder of a train.py run (10 fps x 1 s labelled at its middle: best on hospital footage)")
+    ap.add_argument("--model", default="weight/tcn-r10-s1-center-v2", help="folder of a train.py run (10 fps x 1 s labelled at its middle, landmarks of the 0.3-threshold engine)")
     ap.add_argument("--smooth", type=float, default=1.0, help="seconds over which the most frequent label wins (centred)")
     ap.add_argument("--labels", help="METC annotation .json: print the frame accuracy")
     ap.add_argument("--window", default="model", choices=["model", "native"],
@@ -150,6 +159,8 @@ if __name__ == "__main__":
             print(f"  {b:6.1f}-{e:6.1f} s  {STEPS[s]}")
     done = {STEPS[s]: round(float((lab == s).sum()) / fps, 1) for s in range(1, len(STEPS))}
     print("seconds per step:", done)
+    span = hand_span(p, fps)
+    print(f"washing (first to last hand) {span:.1f} s: " + (f"ALERT, under the WHO {WHO_SECONDS} s" if span < WHO_SECONDS else "compliant"))
     if a.csv:
         np.savetxt(a.csv, np.column_stack([np.arange(n), np.arange(n) / fps, logit.cpu().numpy(), lab]), delimiter=",",
                    fmt=["%d", "%.3f"] + ["%.3f"] * len(STEPS) + ["%d"], header="frame,time," + ",".join(f"logit{k}" for k in range(len(STEPS))) + ",label", comments="")

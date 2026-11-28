@@ -1,7 +1,7 @@
 """METC-trained models on the whole PSKUS dataset (zenodo 4537209, 11 hospital sites/periods, 30 fps): does it generalize?
 
 Landmarks are cached per video (cache/kpt-pskus/<DataSet>/<video>.npz, hands engine on every frame), so a rerun only does the
-videos downloaded since. Then per model: frame accuracy / macro, and per video compliant or not (compliance.py's rule).
+videos downloaded since. Then per model: frame accuracy / macro, and per video compliant or not by steps.
 
 Also the WHO time rule: washing (first to last frame with a hand) under 40 s, and steps-or-time combined.
 
@@ -18,8 +18,7 @@ import torch
 
 import eval as ev
 from eval import label
-from post import avg
-from run import Classifier, classify, landmarks, model_window
+from run import WHO_SECONDS, Classifier, classify, hand_span, landmarks, model_window
 
 ROOT = Path("data/handwash/pskus")
 
@@ -54,12 +53,6 @@ def washing_time():
         m = re.fullmatch(r"(\d+\.\d)(\d+\.\d)", line[7])
         out[line[0][:-4]] = float(m.group(1) if m else line[7])
     return out
-
-
-def hand_span(p, fps):
-    """Seconds from the first to the last frame with a hand: the washing time, whatever the hand recall in between."""
-    i = np.where(p.sum(1) > 0)[0]
-    return (i[-1] - i[0] + 1) / fps if len(i) else 0.0
 
 
 def verdict(ref, lab, fps, need, thr):
@@ -97,7 +90,7 @@ if __name__ == "__main__":
                 comp, bad = (~v[:, 0]).sum(), v[:, 0].sum()
                 cells.append(f"{comp:3d} compliant: FPR {(v[:, 1] & ~v[:, 0]).sum() / max(1, comp) * 100:3.0f}%, recall {(v[:, 1] & v[:, 0]).sum() / max(1, bad) * 100:3.0f}%")
             # WHO time: washing >= 40 s (labels: statistics.csv), alert when the hand span is < 40 s; combined: steps (1 s / 0.5 s) or time
-            t = [(w < 40, h < 40) + verdict(r, l, f, 1.0, 0.5) for r, l, f, h, w in rows if w is not None]
+            t = [(w < WHO_SECONDS, h < WHO_SECONDS) + verdict(r, l, f, 1.0, 0.5) for r, l, f, h, w in rows if w is not None]
             bad_t, al_t, bad_s, al_s = (np.array(c, bool) for c in zip(*t))
             for name, bad, al in (("time < 40 s", bad_t, al_t), ("steps or time", bad_t | bad_s, al_t | al_s)):
                 ok = ~bad

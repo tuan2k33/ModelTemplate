@@ -1,16 +1,25 @@
 # Hand washing steps
 
-Which WHO hand-washing movement (routine / antiseptic washing with water) is being done, from 2 s of hand landmarks. Two TensorRT engines:
+Which WHO hand-washing movement (routine / antiseptic washing with water) is being done, from 1 s of hand landmarks, and whether a wash lasted the WHO 40 s. Two TensorRT engines:
 
 ```
-video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tracking state in, 2 hands x 21 landmarks out, 1.08 ms/frame
+video -> hands engine (hands.py): MediaPipe Hands as one graph, uint8 frame + tracking state in, 2 hands x 21 landmarks out, ~1.1 ms/frame
       -> 2 slots kept apart by wrist position (MediaPipe's left/right flips when seen from above)
-      -> one window per frame: 32 frames (2 s at 16 fps)
+      -> one window per frame: 10 frames (1 s at 10 fps, resampled from the video), labelled at its middle
       -> classifier engine (train.Window): missing hand filled with a copy of the other one (presence flag kept),
          normalized by mean wrist and hand size, + frame differences, TCN -> 7 classes: other + WHO movements 1-6
+      -> washing time = first to last frame with a hand; alert under 40 s
 ```
 
-Default model 10 fps x 1 s, labelled at the window's middle: on another hospital's videos (PSKUS, staff at work, 30 fps) 85.3% of frames right, macro 70.9 (88.2 / 77.3 allowing +-0.5 s at step changes), 23 of 25 incomplete washes caught; on METC validation (14 people never seen in training) 69.5 / 66.0, where 2 s windows do better (77.1 / 75.0). Frames after a 1 s vote (argmax per frame, most frequent label around it).
+Settled scoring (the user's call): frames count as right within +-1 s of a label (a step change is not frame-exact), and a wash is judged by **time**: hand span under 40 s raises the alert. On the whole PSKUS set (another country's hospitals, 3000 videos of staff at work, never seen in training), default model `weight/tcn-r10-s1-center-v2`:
+
+| | Result |
+|---|---|
+| frames, +-1 s (+-0.5 s) | accuracy 92.3 (91.0), macro 73.0 (67.8) |
+| washes under 40 s (alert) | **5% of the 602 long-enough washes alerted, 92% of the short ones caught** |
+| a step missing (each >= 1 s labelled, alert when < 0.5 s predicted) | 42% of the 225 complete washes alerted, 98% of incomplete ones caught: not usable yet |
+
+On METC validation (14 people never seen in training) frames +-1 s are 79.4 / 76.0.
 
 ## Data
 
@@ -25,10 +34,14 @@ Hand recall = hands found / 2 (both hands are always in the sink), 12 videos:
 | MediaPipe VIDEO mode, conf 0.5 | 51-58% | 3/88/9 |
 | MediaPipe VIDEO, conf 0.3 / 0.7 | 49% / 45% | |
 | MediaPipe IMAGE mode, conf 0.3 | 49% | |
+| hands engine, 0.5 (MediaPipe's threshold) | 52% / 48% (METC / PSKUS) | |
+| **hands engine, 0.3, duplicates removed by landmarks** | **67% / 69%** | |
 
 Tried and dropped: a YOLOv8n hand detector (Bingsu/adetailer, 52%, boxes only) and a YOLO26s hand pose trained on the Ultralytics hand-keypoints set (marceloeatworld/yolo26-training, 33% at conf 0.1: it misses clear hands and boxes forearms at the frame edge; that set has few views from above).
 
 All 211 videos with MediaPipe VIDEO 0.5: 0/1/2 hands per step 1-6: 15/71/14, 9/82/9, 16/69/15, 20/58/22, 18/57/25, 9/47/44. Landmarks of the hands found look right, also on top of each other; the misses are mostly visible hands that are blurred by motion or enter from the frame edge.
+
+Lowering the threshold alone finds the same hand twice (a new palm on a tracked hand, or both slots on one hand). Box IoU cannot tell those from two real hands, which overlap most of the time while washing; landmarks can: a palm whose wrist and middle knuckle sit within half a hand size of a tracked hand's is the same hand, and two slots whose 21 landmarks are on average within a quarter hand size are one (`hands.DEDUP`, `thr_test.py`). No frame with a duplicated hand was left in the 12 test videos.
 
 ## Hands engine
 
@@ -36,7 +49,7 @@ All 211 videos with MediaPipe VIDEO 0.5: 0/1/2 hands per step 1-6: 15/71/14, 9/8
 
 - letterbox to 192x192 with `GridSample`, palm detector, 2016 anchors decoded with Mul/Add;
 - NMS without an NMS op, fixed shapes: ArgMax, palms overlapping it (IoU > 0.3) averaged by score (MediaPipe's weighted NMS) and removed, ArgMax again;
-- per slot, the hand tracked from the previous frame (`state`) or a new palm (palms overlapping a tracked hand dropped), palm rect x2.6 shifted 0.5 up;
+- per slot, the hand tracked from the previous frame (`state`: rect, wrist and middle knuckle) or a new palm (palms on a tracked hand dropped, by landmarks), palm rect x2.6 shifted 0.5 up;
 - rotated 224x224 crop with `GridSample` (edge pixels repeated: closer to MediaPipe than zeros, median landmark error 1.5-3.4 px vs 2-5 px), landmark model at batch 2;
 - landmarks back to the frame, next rect from 12 landmarks (x2.0, shifted 0.1 up) -> `state_out`.
 
@@ -70,18 +83,20 @@ Classifier, validation windows (every 4th frame), 30 epochs, label of the window
 Run from `ActionClassifier/handwash/`:
 
 ```bash
-python extract.py --mode engine                       # landmarks of all METC videos with the hands engine -> cache/kpt-engine-0.5/ (--mode video|image: MediaPipe CPU)
-python stats.py cache/kpt-engine-0.5                    # 0/1/2 hands per step
-python train.py --kpt cache/kpt-engine-0.5 --head tcn --fill copy --rate 10 --seconds 1 --anchor center --name tcn-r10-s1-center   # -> weight/<name>/model.pt, model.onnx, metrics.json
-python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r10-s1-center] [--landmarks] [--window model|native]   # step per frame and a summary; engines built on first use
-python fps_test.py                                       # the frame-rate / window table below (PSKUS DataSet7 in data/handwash/pskus)
-python eval.py weight/tcn-r10-s1-center weight/tcn-r10-s2  # whole videos: frames strict and +-0.5 s, missing steps per video; METC val and PSKUS
+python extract.py --mode engine --conf 0.3            # landmarks of all METC videos with the hands engine -> cache/kpt-engine-0.3/ (--mode video|image: MediaPipe CPU)
+python stats.py cache/kpt-engine-0.3                    # 0/1/2 hands per step
+python train.py --kpt cache/kpt-engine-0.3 --head tcn --fill copy --rate 10 --seconds 1 --anchor center --name tcn-r10-s1-center-v2   # -> weight/<name>/model.pt, model.onnx, metrics.json
+python run.py video.mp4 [--out out/video.mp4] [--labels annotation.json] [--model weight/tcn-r10-s1-center-v2] [--landmarks] [--window model|native]   # step per frame, seconds per step, washing time and the 40 s alert; engines built on first use
+python eval.py weight/tcn-r10-s1-center-v2               # whole videos: frames +-0.5 s | +-1 s, missing steps per video; METC val and 30 PSKUS DataSet7 videos
+python pskus_eval.py                                     # whole PSKUS (data/handwash/pskus/DataSet1-11, landmarks cached in cache/kpt-pskus/): frames, steps and 40 s rule per DataSet
 python extract.py --mode engine --fps 20                 # METC re-encoded to 20 fps first; train with --kpt cache/kpt-engine-0.5-20fps --src-fps 20
 ```
 
-`run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~3.5 ms per frame with decoding), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to 16 fps inside the windows. On a validation video the steps 1-3 come out with the right times, while thumb rubbing (25 s) is mostly read as other / scattered steps.
+`run.py` reads the whole video through the hands engine (one frame per call, the tracking needs the previous frame; ~3.5 ms per frame with decoding), then classifies one window per frame in batches of 512 (all 1980 windows of a 2-minute video in ~0.2 s) and prints the steps with their times. Other frame rates are resampled to the model's rate inside the windows.
 
 ## Window length and frame rate
+
+The sections below are the experiments that led to the default (scored strict or +-0.5 s at the time, older hands engine; the frame-rate table came from a script since removed).
 
 The window is `--seconds` long with frames `--rate` per second (8 = every 2nd METC frame). `run.py` resamples any video to the model's rate (`--window model`, default) or feeds every frame (`--window native`). Two test sets: METC validation windows, and 30 PSKUS videos (zenodo 4537209 DataSet7: another hospital, staff at work, 320x240 at 30 fps, re-encoded to 25 and 10 fps with ffmpeg), frames after 1 s smoothing. Accuracy / macro (mean over the steps; PSKUS frames are 60% "other"):
 
@@ -168,17 +183,30 @@ Requiring 2 s of a step before calling it done catches more missing steps (22 / 
 
 ## Compliant or not
 
-`compliance.py`: a video is compliant when all six steps have >= 1 s in the labels; it is reported compliant when all six get >= 1 s of predicted frames (most frequent label within 1 s). Positive = non-compliant (the alert). 10 fps x 1 s, middle:
+Goal: per wash, compliant or not, with at most ~10% of compliant washes alerted. PSKUS has no compliance field, so two definitions from its data: **steps** (all six have >= 1 s in the labels) and **time** (washing >= 40 s in its `statistics.csv`, the WHO duration). `pskus_eval.py`, positive = non-compliant (the alert), 3000 videos:
 
-| Set | Videos (non-compliant) | Accuracy | Non-compliant caught (recall) | Alerts right (precision) | Compliant passed |
-|---|---|---|---|---|---|
-| METC val | 42 (11) | 90.5% | 9 / 11 | 9 / 11 | 29 / 31 |
-| PSKUS DataSet7, all annotated | 208 (183) | 88.9% | 176 / 183 (96%) | 176 / 192 (92%) | **9 / 25** |
+| DataSet | Videos | Frames +-1 s | 40 s rule: long-enough washes alerted | short ones caught |
+|---|---|---|---|---|
+| 1 | 117 | 84.2 / 67.2 | 0% of 47 | 83% |
+| 2 | 387 | 86.8 / 74.1 | 1% of 180 | 81% |
+| 3 | 240 | 90.9 / 65.5 | 0% of 1 | 96% |
+| 4 | 41 | 88.1 / 57.2 | (none) | 93% |
+| 5 | 139 | 94.1 / 69.4 | 12% of 16 | 93% |
+| 6 | 528 | 95.9 / 83.6 | 0% of 49 | 91% |
+| 7 | 208 | 89.9 / 78.5 | 6% of 90 | 90% |
+| 8 | 567 | 95.1 / 65.9 | 8% of 156 | 92% |
+| 9 | 214 | 96.7 / 82.6 | (none) | 98% |
+| 10 | 210 | 92.3 / 68.7 | 12% of 60 | 92% |
+| 11 | 349 | 94.6 / 65.5 | 3 of 3 | 100% |
+| **all** | **3000** | **92.3 / 73.0** | **5% of 602** | **92%** |
 
-Only 12% of the PSKUS washes are compliant, so always raising the alert would already score 88.0% there: the number that matters is the compliant washes passed, 9 of 25. In the 16 false alarms the step reported missing is step 3 in 8 (palm to palm with fingers interlaced, predicted as step 1), step 5 in 4, step 6 in 3 (twice under 1.3 s in the labels), step 4 in 2, step 2 in 1. A 0.5 s threshold passes 12 / 25 and still catches 173 / 183.
+- The time rule needs no step model: the span from the first to the last frame with a hand matches the annotated washing time (median error 1.4 s), whatever the hand recall in between.
+- The step rule alerts 42% of the 225 complete washes (56% with 2.5 s / 1.25 s): the model, trained on METC volunteers who hold a step ~7 s, misses the short steps of hospital staff (median 0-1.5 s; only 7% of PSKUS washes have all six steps >= 1 s). Training on PSKUS is the next step if steps are wanted.
+- DataSet5 camera105 (185 videos) is left out: red and green are swapped and the hands enter at the frame edge with the palm outside it; MediaPipe itself finds a hand in 0 of 55 sampled washing frames at its default threshold (21 after swapping the colours at 0.1). Kept in, it alone raises the time rule's false alarms from 5% to 12%. The camera id is reused in DataSet6 and 8, which are fine.
 
 ## Limits
 
 - Only routine / antiseptic hand washing (one model). Surgical scrub needs its own data: no public RGB set with step labels was found (MIVIA's surgical hand-washing set is depth only).
 - The hands engine is built for one frame size and one camera per call; the classifier engine takes any batch of windows.
-- Landmarks find only about half the hands (motion blur, hands entering from the frame edge, hands on top of each other).
+- Landmarks find about two thirds of the hands (motion blur, hands entering from the frame edge, hands on top of each other), and none when only the fingers are in view: the camera must see the palms and wrists.
+- A sink with motion but no hand found reads as a short wash; a camera check (motion without hands) would tell a broken camera from a short wash.
