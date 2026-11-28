@@ -24,13 +24,14 @@ Run from `Motion/`:
 
 ```bash
 python run.py in.mp4 out.mp4                          # left: moving regions boxed, right: the learned background (H264)
+python motion.py in.mp4 --mask out/motion.mp4 --background out/bg.png   # motion video (white = moving, H264, video size) + the background after the last frame
 python run.py in.mp4 out.mp4 --detector ../Detector/weight/coco/model.onnx   # fused engine: detector boxes, yellow where the mask raised the score
 python build.py cache/yolo26n.pt cache/fused.engine --batch 4 --top 720 1280  # fused multi-camera engine; run with model.Engine(engine, cameras=N)
 ```
 
 Options: `--every` (update the background every Nth frame, default 5; the mask is computed on every frame), `--form` (seconds to re-form after a global change, 5), `--cap` (most weight a background can gather in seconds, so the longest a still object stays foreground, 600), `--thr` (a pixel matches when no channel differs by more than this, 0..255, default 25), `--min-area`, `--boost`, `--conf`.
 
-Code: `model.py` (the background graph, the fused graph, engine runner keeping one state per camera), `run.py`, `build.py`, and the experiment behind the boost: `collect.py` (Motion mask plus boxes of a reference and of the detectors under test, optionally on a degraded frame), `fuse.py` (re-scoring variants).
+Code: `model.py` (the background graph, the fused graph, engine runner keeping one state per camera), `run.py`, `motion.py`, `build.py`, and the experiment behind the boost: `collect.py` (Motion mask plus boxes of a reference and of the detectors under test, optionally on a degraded frame), `fuse.py` (re-scoring variants).
 
 ## Limits
 

@@ -31,6 +31,7 @@ cd OCR/dewarp    && python dewarp.py photo.jpg flat.jpg && python bench_uvdoc.py
 cd FaceID        && python eval.py --sets lfw --pairs 600
 cd ActionClassifier/handwash && python extract.py --mode engine --conf 0.3 && python train.py --kpt cache/kpt-engine-0.3 --head tcn --fill copy --rate 10 --seconds 1 --anchor center --name tcn-r10-s1-center-v2 && python run.py video.mp4 --out out/video.mp4
 cd Motion        && python run.py in.mp4 out.mp4 [--detector ../Detector/weight/coco/model.onnx]   # background model; build.py makes the fused multi-camera engine
+cd Motion        && python motion.py in.mp4 --mask out/motion.mp4 --background out/bg.png   # motion video + last background, same engine
 ```
 
 "Single test" equivalents: `--limit N` (Detector eval), `--pairs N` (FaceID eval), `--per-class N` / `--test-per-class N` (Classifier train).
