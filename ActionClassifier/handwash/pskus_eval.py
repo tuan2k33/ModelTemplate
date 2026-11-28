@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
+import eval as ev
 from eval import label
 from post import avg
 from run import Classifier, classify, landmarks, model_window
@@ -34,7 +35,7 @@ def cached():
         for f in sorted(glob.glob(str(d / "Annotations/*/*.json"))):
             ann.setdefault(Path(f).stem, f)
         for v in sorted(d.glob("Videos/*.mp4")):
-            if v.stem not in ann:
+            if v.stem not in ann or (d.name == "DataSet5" and v.stem.endswith("camera105")):  # its camera105 (the id is reused in other DataSets, fine there): red/green swapped, hands enter at the edge, MediaPipe finds almost none
                 continue
             c = Path(f"cache/kpt-pskus/{d.name}/{v.stem}.npz")
             if not c.exists():
@@ -80,15 +81,16 @@ if __name__ == "__main__":
             d = np.load(c)
             logit, lab = classify(clf, d["x"], d["p"], float(d["fps"]), int(d["H"]), int(d["W"]), rate, sec, 1.0, anchor, interp)
             per.setdefault(ds, []).append((d["ref"], lab[:len(d["ref"])], float(d["fps"]), hand_span(d["p"], float(d["fps"])), wt.get(c.stem)))
-        print(f"\n{Path(m).name} on PSKUS. Frames: accuracy / macro. Videos, positive = non-compliant: compliant = every step >= 1 s (2.5 s) in the labels, "
+        print(f"\n{Path(m).name} on PSKUS. Frames: accuracy / macro within +-0.5 s | +-1 s of a label. Videos, positive = non-compliant: compliant = every step >= 1 s (2.5 s) in the labels, "
               f"alert when a step has < 0.5 s (1.25 s) predicted; FPR = compliant washes alerted, recall = non-compliant caught")
         allrows = []
         for ds in sorted(per, key=lambda s: int(s[7:])) + ["all"]:
             rows = allrows if ds == "all" else per[ds]
             if ds != "all":
                 allrows += rows
-            ref, lab = np.concatenate([r[0] for r in rows]), np.concatenate([r[1] for r in rows])
-            mac = np.mean([(lab[ref == k] == k).mean() for k in range(7) if (ref == k).any()]) * 100
+            fr = []
+            for ev.TOL in (0.5, 1.0):
+                fr.append("{2:4.1f} / {3:4.1f}".format(*ev.scores([(r, l, f) for r, l, f, _, _ in rows], None)))
             cells = []
             for need, thr in ((1.0, 0.5), (2.5, 1.25)):
                 v = np.array([verdict(r, l, f, need, thr) for r, l, f, _, _ in rows])
@@ -100,4 +102,4 @@ if __name__ == "__main__":
             for name, bad, al in (("time < 40 s", bad_t, al_t), ("steps or time", bad_t | bad_s, al_t | al_s)):
                 ok = ~bad
                 cells.append(f"{name}: {ok.sum()} compliant, FPR {(al & ok).sum() / max(1, ok.sum()) * 100:3.0f}%, recall {(al & bad).sum() / max(1, bad.sum()) * 100:3.0f}%")
-            print(f"  {ds:10s} {len(rows):4d} videos  frames {(ref == lab).mean() * 100:5.1f} / {mac:5.1f}  |  " + "  |  ".join(cells), flush=True)
+            print(f"  {ds:10s} {len(rows):4d} videos  frames +-0.5 s {fr[0]}, +-1 s {fr[1]}  |  " + "  |  ".join(cells), flush=True)
